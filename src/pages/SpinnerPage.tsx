@@ -14,10 +14,11 @@ import {
 import {
   buildSpinnerKeyframes,
   markGuestWinner,
-  playCelebrationFanfare,
+  startWheelSpinTicks,
   unlockAudio,
   useSpinnerStore,
   type Guest,
+  type WheelTickController,
 } from '../store';
 
 const WHEEL_COLORS = [
@@ -83,9 +84,14 @@ export function SpinnerPage() {
   const wheelCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const currentRotationRef = useRef(0);
   const spinAnimationRef = useRef<Animation | null>(null);
+  const spinTicksRef = useRef<WheelTickController | null>(null);
 
   const confettiLauncherRef = useRef<confetti.CreateTypes | null>(null);
   const celebrationTimersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    spinTicksRef.current?.setMuted(muted);
+  }, [muted]);
 
   const clearCelebrationTimers = useCallback(() => {
     for (const id of celebrationTimersRef.current) {
@@ -122,6 +128,10 @@ export function SpinnerPage() {
 
     return () => {
       clearCelebrationTimers();
+      if (spinTicksRef.current) {
+        spinTicksRef.current.stop();
+        spinTicksRef.current = null;
+      }
       if (spinAnimationRef.current) {
         spinAnimationRef.current.onfinish = null;
         spinAnimationRef.current.cancel();
@@ -296,8 +306,6 @@ export function SpinnerPage() {
       setPopupAnim('spin');
     }
 
-    playCelebrationFanfare(muted);
-
     scheduleTimer(() => setIsCelebrating(false), 3300);
     scheduleTimer(() => {
       setViewportSpinning(false);
@@ -376,11 +384,17 @@ export function SpinnerPage() {
     const canvas = wheelCanvasRef.current;
     if (!canvas || numSegments === 0 || isSpinning || winner) return;
 
+    if (spinTicksRef.current) {
+      spinTicksRef.current.stop();
+      spinTicksRef.current = null;
+    }
     if (spinAnimationRef.current) {
       spinAnimationRef.current.onfinish = null;
       spinAnimationRef.current.cancel();
       spinAnimationRef.current = null;
     }
+
+    unlockAudio();
 
     const winnerIndex = Math.floor(Math.random() * numSegments);
     const chosenWinner = eligibleGuests[winnerIndex];
@@ -401,7 +415,21 @@ export function SpinnerPage() {
     });
     spinAnimationRef.current = anim;
 
+    spinTicksRef.current = startWheelSpinTicks({
+      startAngle,
+      targetAngle,
+      durationSec,
+      cruisePct,
+      slowDown,
+      numSegments,
+      muted,
+    });
+
     anim.onfinish = () => {
+      if (spinTicksRef.current) {
+        spinTicksRef.current.stop();
+        spinTicksRef.current = null;
+      }
       const settled = ((targetAngle % 360) + 360) % 360;
       currentRotationRef.current = settled;
       if (wheelCanvasRef.current) {
@@ -418,7 +446,6 @@ export function SpinnerPage() {
 
     setWinner(null);
     setIsSpinning(true);
-    unlockAudio();
   };
 
   const handleCloseWinner = () => {
@@ -509,7 +536,7 @@ export function SpinnerPage() {
             <button
               type="button"
               onClick={() => setMuted((m) => !m)}
-              aria-label={muted ? 'Unmute fanfare audio' : 'Mute fanfare audio'}
+              aria-label={muted ? 'Unmute wheel sound' : 'Mute wheel sound'}
               className="p-2 rounded-lg bg-[#111833] border border-slate-700 text-amber-300 hover:border-amber-400/50 cursor-pointer"
             >
               {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -747,7 +774,7 @@ export function SpinnerPage() {
                 className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-sky-300/45 bg-[#00477f] text-sky-50 text-sm font-semibold hover:bg-[#00599e] transition-colors cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" />
-                <span>Replay Fanfare</span>
+                <span>Replay Confetti</span>
               </button>
 
               <button

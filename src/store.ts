@@ -357,7 +357,7 @@ export function buildSpinnerKeyframes(
   return keyframes;
 }
 
-// --- Web Audio Low-Bass Hockey Goal Horn ("Toot! Toot!") ---
+// --- Web Audio TV Game Show Wooden Peg Spin Ticks ---
 
 let sharedCtx: AudioContext | null = null;
 
@@ -380,161 +380,195 @@ export function unlockAudio(): void {
   }
 }
 
-function createBrassSaturationCurve(amount = 14): Float32Array<ArrayBuffer> {
-  const samples = 1024;
-  const buffer = new ArrayBuffer(samples * Float32Array.BYTES_PER_ELEMENT);
-  const curve = new Float32Array(buffer);
-  for (let i = 0; i < samples; i++) {
-    const x = (i * 2) / samples - 1;
-    curve[i] = Math.tanh(x * amount) / Math.tanh(amount);
-  }
-  return curve;
+export interface WheelTickController {
+  setMuted: (muted: boolean) => void;
+  stop: () => void;
 }
 
-export function playCelebrationFanfare(muted = false): void {
-  if (muted) return;
+export function startWheelSpinTicks(params: {
+  startAngle: number;
+  targetAngle: number;
+  durationSec: number;
+  cruisePct: number;
+  slowDown: number;
+  numSegments: number;
+  muted: boolean;
+}): WheelTickController {
+  const noop: WheelTickController = {
+    setMuted: () => {},
+    stop: () => {},
+  };
+
   try {
     const ctx = getAudioContext();
-    if (!ctx) return;
+    if (!ctx) return noop;
     if (ctx.state === 'suspended') {
       ctx.resume().catch(() => {});
     }
 
-    // Master compressor keeps the deep low-bass horn huge without clipping
-    const master = ctx.createDynamicsCompressor();
-    master.threshold.value = -10;
-    master.knee.value = 12;
-    master.ratio.value = 5;
-    master.attack.value = 0.003;
-    master.release.value = 0.16;
-    master.connect(ctx.destination);
+    const { startAngle, targetAngle, durationSec, cruisePct, slowDown, numSegments, muted } = params;
+    const totalDelta = targetAngle - startAngle;
+    if (totalDelta <= 0 || durationSec <= 0 || numSegments <= 0) return noop;
 
-    // Subtle hockey arena slapback echo bus
-    const arenaEcho1 = ctx.createDelay(0.5);
-    arenaEcho1.delayTime.value = 0.095;
-    const arenaEcho2 = ctx.createDelay(0.5);
-    arenaEcho2.delayTime.value = 0.19;
+    // Master muteable bus so toggling mute mid-spin works immediately
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = muted ? 0 : 0.85;
 
-    const echoFilter = ctx.createBiquadFilter();
-    echoFilter.type = 'lowpass';
-    echoFilter.frequency.value = 850;
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.value = -12;
+    compressor.knee.value = 14;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.002;
+    compressor.release.value = 0.08;
 
-    const echoGain1 = ctx.createGain();
-    echoGain1.gain.value = 0.24;
-    const echoGain2 = ctx.createGain();
-    echoGain2.gain.value = 0.13;
+    masterGain.connect(compressor);
+    compressor.connect(ctx.destination);
 
-    echoFilter.connect(arenaEcho1);
-    arenaEcho1.connect(echoGain1);
-    echoGain1.connect(master);
+    // Pre-generate a tiny crisp noise burst buffer for the pointer pin snapping off each wooden peg
+    const snapLength = Math.floor(ctx.sampleRate * 0.018);
+    const snapBuffer = ctx.createBuffer(1, snapLength, ctx.sampleRate);
+    const snapData = snapBuffer.getChannelData(0);
+    for (let i = 0; i < snapLength; i++) {
+      const env = Math.pow(1 - i / snapLength, 2.2);
+      snapData[i] = (Math.random() * 2 - 1) * env;
+    }
 
-    echoFilter.connect(arenaEcho2);
-    arenaEcho2.connect(echoGain2);
-    echoGain2.connect(master);
+    // Match slice dividers for moderate wheels, or cap to an authentic game-show peg ring
+    const pegCount =
+      numSegments >= 8 && numSegments <= 24 ? numSegments : numSegments < 8 ? 16 : 20;
+    const pegStepDeg = 360 / pegCount;
 
-    const brassCurve = createBrassSaturationCurve(3.4);
+    // Compute exact peg crossing times along the spin easing curve
+    const sampleSteps = Math.max(1200, Math.round(durationSec * 240));
+    const crossings: Array<{ timeSec: number; speed: number; pegIdx: number }> = [];
 
-    // Single pneumatic hockey horn blast ("TOOT")
-    const triggerHockeyHornBlast = (startTime: number, duration: number, level = 0.72) => {
-      const brassDrive = ctx.createWaveShaper();
-      brassDrive.curve = brassCurve;
-      brassDrive.oversample = '2x';
+    let prevAngle = startAngle;
+    let prevPegIndex = Math.floor(prevAngle / pegStepDeg);
+    let lastScheduledTime = -1;
+    const minTickGapSec = 0.022; // Keep fast ticks crisp & distinct without buzzing
 
-      const blastGain = ctx.createGain();
-      blastGain.gain.setValueAtTime(0.0001, startTime);
-      blastGain.gain.linearRampToValueAtTime(level, startTime + 0.028);
-      blastGain.gain.setValueAtTime(level * 0.94, startTime + Math.max(0.05, duration - 0.06));
-      blastGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+    for (let i = 1; i <= sampleSteps; i++) {
+      const t = i / sampleSteps;
+      const angle = startAngle + totalDelta * evalSpinnerProgress(t, cruisePct, slowDown);
+      const pegIndex = Math.floor(angle / pegStepDeg);
 
-      // Warm low-mid brass filter so the low bass dominates
-      const hornFilter = ctx.createBiquadFilter();
-      hornFilter.type = 'lowpass';
-      hornFilter.Q.value = 1.9;
-      hornFilter.frequency.setValueAtTime(1650, startTime);
-      hornFilter.frequency.exponentialRampToValueAtTime(1120, startTime + duration);
+      if (pegIndex > prevPegIndex) {
+        const prevT = (i - 1) / sampleSteps;
+        const boundaryAngle = (prevPegIndex + 1) * pegStepDeg;
+        const frac = angle > prevAngle ? (boundaryAngle - prevAngle) / (angle - prevAngle) : 0;
+        const crossT = prevT + Math.max(0, Math.min(1, frac)) * (t - prevT);
+        const timeSec = crossT * durationSec;
 
-      // Sub-bass boost shelf for chesty arena rumble
-      const bassBoost = ctx.createBiquadFilter();
-      bassBoost.type = 'lowshelf';
-      bassBoost.frequency.value = 150;
-      bassBoost.gain.value = 6.5;
-
-      brassDrive.connect(hornFilter);
-      hornFilter.connect(bassBoost);
-      bassBoost.connect(blastGain);
-      blastGain.connect(master);
-      blastGain.connect(echoFilter);
-
-      // Deep sub-bass foundation (55 Hz A1 + 110 Hz A2)
-      const subOsc = ctx.createOscillator();
-      const subGain = ctx.createGain();
-      subOsc.type = 'triangle';
-      subOsc.frequency.setValueAtTime(53.2, startTime);
-      subOsc.frequency.linearRampToValueAtTime(55.0, startTime + 0.04);
-      subOsc.frequency.setValueAtTime(55.0, startTime + Math.max(0.06, duration - 0.06));
-      subOsc.frequency.linearRampToValueAtTime(53.5, startTime + duration);
-      subGain.gain.value = 0.55;
-      subOsc.connect(subGain);
-      subGain.connect(blastGain);
-      subOsc.start(startTime);
-      subOsc.stop(startTime + duration + 0.03);
-
-      // Multi-bell hockey horn chord cluster (detuned low A2 + D3 + E3 + gritty upper A3)
-      const bells: Array<{ freq: number; type: OscillatorType; gain: number }> = [
-        { freq: 109.3, type: 'sawtooth', gain: 0.28 }, // A2 bell 1
-        { freq: 110.6, type: 'sawtooth', gain: 0.28 }, // A2 bell 2 (thick air-horn beat)
-        { freq: 146.5, type: 'sawtooth', gain: 0.17 }, // D3 low-mid body
-        { freq: 164.8, type: 'sawtooth', gain: 0.19 }, // E3 power fifth
-        { freq: 219.2, type: 'sawtooth', gain: 0.10 }, // A3 upper brass bite
-      ];
-
-      for (const bell of bells) {
-        const osc = ctx.createOscillator();
-        const voiceGain = ctx.createGain();
-        osc.type = bell.type;
-
-        // Pneumatic air-valve pitch scoop on attack & slight pressure sag on release
-        osc.frequency.setValueAtTime(bell.freq * 0.962, startTime);
-        osc.frequency.linearRampToValueAtTime(bell.freq, startTime + 0.038);
-        osc.frequency.setValueAtTime(bell.freq, startTime + Math.max(0.06, duration - 0.065));
-        osc.frequency.linearRampToValueAtTime(bell.freq * 0.974, startTime + duration);
-
-        voiceGain.gain.value = bell.gain;
-        osc.connect(voiceGain);
-        voiceGain.connect(brassDrive);
-        osc.start(startTime);
-        osc.stop(startTime + duration + 0.03);
+        if (timeSec - lastScheduledTime >= minTickGapSec) {
+          const speed = evalSpinnerRelativeSpeed(crossT, cruisePct, slowDown);
+          crossings.push({ timeSec, speed, pegIdx: pegIndex });
+          lastScheduledTime = timeSec;
+        }
       }
 
-      // Brief pressurized air burst on horn valve opening
-      const airSamples = Math.floor(ctx.sampleRate * 0.06);
-      const airBuffer = ctx.createBuffer(1, airSamples, ctx.sampleRate);
-      const airData = airBuffer.getChannelData(0);
-      for (let i = 0; i < airSamples; i++) {
-        airData[i] = Math.random() * 2 - 1;
-      }
-      const airNoise = ctx.createBufferSource();
-      airNoise.buffer = airBuffer;
-      const airFilter = ctx.createBiquadFilter();
-      airFilter.type = 'bandpass';
-      airFilter.frequency.value = 620;
-      airFilter.Q.value = 1.1;
-      const airGain = ctx.createGain();
-      airGain.gain.setValueAtTime(0.14, startTime);
-      airGain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.055);
-      airNoise.connect(airFilter);
-      airFilter.connect(airGain);
-      airGain.connect(master);
-      airNoise.start(startTime);
-      airNoise.stop(startTime + 0.06);
+      prevAngle = angle;
+      prevPegIndex = pegIndex;
+    }
+
+    const activeNodes: Array<AudioScheduledSourceNode> = [];
+    const baseTime = ctx.currentTime + 0.015;
+
+    const scheduleWoodenPegHit = (hitTime: number, speed: number, pegIdx: number) => {
+      // Subtle organic pitch variation per wooden peg (+/- 5%)
+      const pegJitter = 0.95 + ((pegIdx * 37) % 11) * 0.01;
+      const slowWeight = 1 - Math.min(1, speed) * 0.25; // Slightly warmer/heavier as it slows down
+      const level = (0.34 + 0.26 * slowWeight) * (0.85 + 0.15 * (1 - speed));
+
+      // 1. Hollow wooden peg body knock (rapid downward pitch transient)
+      const woodOsc = ctx.createOscillator();
+      const woodGain = ctx.createGain();
+      woodOsc.type = 'triangle';
+      const startFreq = (820 + speed * 140) * pegJitter;
+      const endFreq = 265 * pegJitter;
+      woodOsc.frequency.setValueAtTime(startFreq, hitTime);
+      woodOsc.frequency.exponentialRampToValueAtTime(endFreq, hitTime + 0.018);
+
+      woodGain.gain.setValueAtTime(0.0001, hitTime);
+      woodGain.gain.linearRampToValueAtTime(level, hitTime + 0.0015);
+      woodGain.gain.exponentialRampToValueAtTime(0.0001, hitTime + 0.026);
+
+      woodOsc.connect(woodGain);
+      woodGain.connect(masterGain);
+      woodOsc.start(hitTime);
+      woodOsc.stop(hitTime + 0.03);
+      activeNodes.push(woodOsc);
+
+      // 2. Lower wooden resonance thud for physical peg warmth
+      const thudOsc = ctx.createOscillator();
+      const thudGain = ctx.createGain();
+      thudOsc.type = 'sine';
+      thudOsc.frequency.setValueAtTime(420 * pegJitter, hitTime);
+      thudOsc.frequency.exponentialRampToValueAtTime(165 * pegJitter, hitTime + 0.022);
+
+      thudGain.gain.setValueAtTime(0.0001, hitTime);
+      thudGain.gain.linearRampToValueAtTime(level * 0.55, hitTime + 0.002);
+      thudGain.gain.exponentialRampToValueAtTime(0.0001, hitTime + 0.028);
+
+      thudOsc.connect(thudGain);
+      thudGain.connect(masterGain);
+      thudOsc.start(hitTime);
+      thudOsc.stop(hitTime + 0.032);
+      activeNodes.push(thudOsc);
+
+      // 3. Flapper/pin snap transient
+      const snapSrc = ctx.createBufferSource();
+      snapSrc.buffer = snapBuffer;
+      const snapFilter = ctx.createBiquadFilter();
+      snapFilter.type = 'bandpass';
+      snapFilter.frequency.value = (2150 + speed * 450) * pegJitter;
+      snapFilter.Q.value = 1.6;
+
+      const snapGain = ctx.createGain();
+      snapGain.gain.setValueAtTime(level * 0.65, hitTime);
+      snapGain.gain.exponentialRampToValueAtTime(0.0001, hitTime + 0.016);
+
+      snapSrc.connect(snapFilter);
+      snapFilter.connect(snapGain);
+      snapGain.connect(masterGain);
+      snapSrc.start(hitTime);
+      snapSrc.stop(hitTime + 0.02);
+      activeNodes.push(snapSrc);
     };
 
-    const now = ctx.currentTime + 0.02;
+    for (const crossing of crossings) {
+      scheduleWoodenPegHit(baseTime + crossing.timeSec, crossing.speed, crossing.pegIdx);
+    }
 
-    // Classic hockey goal horn: "TOOT! ... TOOOOOOT!"
-    triggerHockeyHornBlast(now, 0.36, 0.72);
-    triggerHockeyHornBlast(now + 0.51, 0.9, 0.78);
+    let stopped = false;
+
+    return {
+      setMuted: (nextMuted: boolean) => {
+        if (stopped) return;
+        const now = ctx.currentTime;
+        masterGain.gain.cancelScheduledValues(now);
+        masterGain.gain.setValueAtTime(nextMuted ? 0 : 0.85, now);
+      },
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        const now = ctx.currentTime;
+        masterGain.gain.cancelScheduledValues(now);
+        masterGain.gain.setValueAtTime(0, now);
+        for (const node of activeNodes) {
+          try {
+            node.stop(now);
+          } catch {
+            // Node already finished
+          }
+        }
+        try {
+          masterGain.disconnect();
+        } catch {
+          // Ignore disconnect errors
+        }
+      },
+    };
   } catch {
-    // Ignore WebAudio playback restrictions
+    return noop;
   }
 }
