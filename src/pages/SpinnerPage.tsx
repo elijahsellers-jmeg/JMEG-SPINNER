@@ -14,6 +14,7 @@ import {
 import {
   buildSpinnerKeyframes,
   markGuestWinner,
+  playWinningSound,
   startWheelSpinTicks,
   unlockAudio,
   useSpinnerStore,
@@ -292,25 +293,40 @@ export function SpinnerPage() {
 
   const triggerExtravaganza = () => {
     clearCelebrationTimers();
-    setIsCelebrating(true);
 
-    if (viewportSpinning) {
-      setViewportSpinning(false);
-      setPopupAnim('none');
-      requestAnimationFrame(() => {
-        setViewportSpinning(true);
-        setPopupAnim('spin');
-      });
-    } else {
-      setViewportSpinning(true);
-      setPopupAnim('spin');
+    if (config.winningSoundEnabled) {
+      playWinningSound(muted);
     }
 
-    scheduleTimer(() => setIsCelebrating(false), 3300);
-    scheduleTimer(() => {
+    if (config.rotationEnabled) {
+      if (viewportSpinning) {
+        setViewportSpinning(false);
+        setPopupAnim('none');
+        requestAnimationFrame(() => {
+          setViewportSpinning(true);
+          setPopupAnim('spin');
+        });
+      } else {
+        setViewportSpinning(true);
+        setPopupAnim('spin');
+      }
+      scheduleTimer(() => {
+        setViewportSpinning(false);
+        setPopupAnim('none');
+      }, 1250);
+    } else {
       setViewportSpinning(false);
-      setPopupAnim('none');
-    }, 1250);
+      setPopupAnim('pop');
+    }
+
+    if (!config.confettiEnabled) {
+      setIsCelebrating(false);
+      setEmblems([]);
+      return;
+    }
+
+    setIsCelebrating(true);
+    scheduleTimer(() => setIsCelebrating(false), 3300);
 
     const fire = confettiLauncherRef.current ?? confetti;
 
@@ -415,15 +431,17 @@ export function SpinnerPage() {
     });
     spinAnimationRef.current = anim;
 
-    spinTicksRef.current = startWheelSpinTicks({
-      startAngle,
-      targetAngle,
-      durationSec,
-      cruisePct,
-      slowDown,
-      numSegments,
-      muted,
-    });
+    if (config.pegSoundEnabled) {
+      spinTicksRef.current = startWheelSpinTicks({
+        startAngle,
+        targetAngle,
+        durationSec,
+        cruisePct,
+        slowDown,
+        numSegments,
+        muted,
+      });
+    }
 
     anim.onfinish = () => {
       if (spinTicksRef.current) {
@@ -768,14 +786,16 @@ export function SpinnerPage() {
             </div>
 
             <div className="pt-4 flex flex-wrap items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={triggerExtravaganza}
-                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-sky-300/45 bg-[#00477f] text-sky-50 text-sm font-semibold hover:bg-[#00599e] transition-colors cursor-pointer"
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>Replay Confetti</span>
-              </button>
+              {(config.confettiEnabled || config.rotationEnabled || config.winningSoundEnabled) && (
+                <button
+                  type="button"
+                  onClick={triggerExtravaganza}
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-sky-300/45 bg-[#00477f] text-sky-50 text-sm font-semibold hover:bg-[#00599e] transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>Replay Effects</span>
+                </button>
+              )}
 
               <button
                 type="button"

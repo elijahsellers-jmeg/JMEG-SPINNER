@@ -5,6 +5,10 @@ export interface SpinnerConfig {
   spinnerDurationSec: number;
   spinnerCruisePct: number;
   spinnerSlowDown: number;
+  winningSoundEnabled: boolean;
+  pegSoundEnabled: boolean;
+  confettiEnabled: boolean;
+  rotationEnabled: boolean;
 }
 
 export interface Guest {
@@ -30,6 +34,10 @@ export const DEFAULT_CONFIG: SpinnerConfig = {
   spinnerDurationSec: 6,
   spinnerCruisePct: 15,
   spinnerSlowDown: 4.5,
+  winningSoundEnabled: false,
+  pegSoundEnabled: true,
+  confettiEnabled: true,
+  rotationEnabled: true,
 };
 
 const GUESTS_KEY = 'jmeg_spinner_guests_v1';
@@ -65,6 +73,22 @@ function clampConfig(raw: Partial<SpinnerConfig> | null | undefined): SpinnerCon
     spinnerDurationSec: Number.isFinite(dur) ? Math.max(2, Math.min(20, Math.round(dur * 10) / 10)) : DEFAULT_CONFIG.spinnerDurationSec,
     spinnerCruisePct: Number.isFinite(cruise) ? Math.max(0, Math.min(60, Math.round(cruise))) : DEFAULT_CONFIG.spinnerCruisePct,
     spinnerSlowDown: Number.isFinite(slow) ? Math.max(1, Math.min(10, Math.round(slow * 10) / 10)) : DEFAULT_CONFIG.spinnerSlowDown,
+    winningSoundEnabled:
+      typeof raw?.winningSoundEnabled === 'boolean'
+        ? raw.winningSoundEnabled
+        : DEFAULT_CONFIG.winningSoundEnabled,
+    pegSoundEnabled:
+      typeof raw?.pegSoundEnabled === 'boolean'
+        ? raw.pegSoundEnabled
+        : DEFAULT_CONFIG.pegSoundEnabled,
+    confettiEnabled:
+      typeof raw?.confettiEnabled === 'boolean'
+        ? raw.confettiEnabled
+        : DEFAULT_CONFIG.confettiEnabled,
+    rotationEnabled:
+      typeof raw?.rotationEnabled === 'boolean'
+        ? raw.rotationEnabled
+        : DEFAULT_CONFIG.rotationEnabled,
   };
 }
 
@@ -570,5 +594,143 @@ export function startWheelSpinTicks(params: {
     };
   } catch {
     return noop;
+  }
+}
+
+export function playWinningSound(muted = false): void {
+  if (muted) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const master = ctx.createDynamicsCompressor();
+    master.threshold.value = -14;
+    master.knee.value = 16;
+    master.ratio.value = 3.5;
+    master.attack.value = 0.004;
+    master.release.value = 0.14;
+    master.connect(ctx.destination);
+
+    // Subtle room reflection for natural hall applause depth
+    const roomDelay = ctx.createDelay(0.25);
+    roomDelay.delayTime.value = 0.042;
+    const roomFilter = ctx.createBiquadFilter();
+    roomFilter.type = 'lowpass';
+    roomFilter.frequency.value = 2200;
+    const roomGain = ctx.createGain();
+    roomGain.gain.value = 0.22;
+
+    roomFilter.connect(roomDelay);
+    roomDelay.connect(roomGain);
+    roomGain.connect(master);
+
+    // Pre-generate a realistic hand-clap impulse buffer (palm impact + subtle 9ms bounce)
+    const clapLen = Math.floor(ctx.sampleRate * 0.045);
+    const clapBuffer = ctx.createBuffer(1, clapLen, ctx.sampleRate);
+    const clapData = clapBuffer.getChannelData(0);
+    const bounceSample = Math.floor(ctx.sampleRate * 0.009);
+    for (let i = 0; i < clapLen; i++) {
+      const t = i / clapLen;
+      const mainEnv = Math.pow(1 - t, 3.1);
+      const bounceEnv = i >= bounceSample ? Math.pow(1 - (i - bounceSample) / clapLen, 4.2) * 0.45 : 0;
+      clapData[i] = (Math.random() * 2 - 1) * (mainEnv + bounceEnv);
+    }
+
+    // Soft warm hall applause bed so individual claps blend like a real crowd
+    const bedDuration = 3.35;
+    const bedSamples = Math.floor(ctx.sampleRate * bedDuration);
+    const bedBuffer = ctx.createBuffer(1, bedSamples, ctx.sampleRate);
+    const bedData = bedBuffer.getChannelData(0);
+    for (let i = 0; i < bedSamples; i++) {
+      const ripple = 0.8 + 0.2 * Math.sin((i / ctx.sampleRate) * 24);
+      bedData[i] = (Math.random() * 2 - 1) * ripple;
+    }
+
+    const now = ctx.currentTime + 0.02;
+
+    const bedSrc = ctx.createBufferSource();
+    bedSrc.buffer = bedBuffer;
+    const bedBand = ctx.createBiquadFilter();
+    bedBand.type = 'bandpass';
+    bedBand.frequency.value = 1050;
+    bedBand.Q.value = 0.65;
+    const bedShelf = ctx.createBiquadFilter();
+    bedShelf.type = 'highshelf';
+    bedShelf.frequency.value = 2600;
+    bedShelf.gain.value = -5;
+    const bedGain = ctx.createGain();
+    bedGain.gain.setValueAtTime(0.0001, now);
+    bedGain.gain.linearRampToValueAtTime(0.14, now + 0.35);
+    bedGain.gain.setValueAtTime(0.13, now + 1.85);
+    bedGain.gain.exponentialRampToValueAtTime(0.0001, now + bedDuration);
+
+    bedSrc.connect(bedBand);
+    bedBand.connect(bedShelf);
+    bedShelf.connect(bedGain);
+    bedGain.connect(master);
+    bedSrc.start(now);
+    bedSrc.stop(now + bedDuration + 0.02);
+
+    // Simulate 16 distinct audience members clapping with natural tempo, tone & stereo spread
+    const clapperCount = 16;
+    const canPan = typeof ctx.createStereoPanner === 'function';
+
+    for (let person = 0; person < clapperCount; person++) {
+      const startOffset = 0.01 + (person / clapperCount) * 0.28 + Math.random() * 0.08;
+      const stopTime = 2.25 + Math.random() * 0.95;
+      const basePeriod = 0.18 + Math.random() * 0.12; // ~3.3 to 5.5 claps/sec
+      const personTone = 780 + (person / clapperCount) * 1150;
+      const personPan = -0.8 + (person / (clapperCount - 1)) * 1.6;
+
+      let cursor = startOffset;
+      while (cursor < stopTime) {
+        const hitTime = now + cursor;
+        const progress = cursor / 3.2;
+        const crowdSwell =
+          cursor < 0.35
+            ? 0.55 + (cursor / 0.35) * 0.45
+            : cursor > 2.0
+            ? Math.max(0.25, 1 - (progress - 0.62) * 1.7)
+            : 1;
+
+        const src = ctx.createBufferSource();
+        src.buffer = clapBuffer;
+        src.playbackRate.value = 0.88 + Math.random() * 0.26;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = personTone * (0.85 + Math.random() * 0.32);
+        filter.Q.value = 1.4 + Math.random() * 1.1;
+
+        const gain = ctx.createGain();
+        const peak = (0.14 + Math.random() * 0.14) * crowdSwell;
+        gain.gain.setValueAtTime(peak, hitTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, hitTime + 0.042);
+
+        src.connect(filter);
+        filter.connect(gain);
+
+        if (canPan) {
+          const panner = ctx.createStereoPanner();
+          panner.pan.value = Math.max(-0.9, Math.min(0.9, personPan + (Math.random() - 0.5) * 0.2));
+          gain.connect(panner);
+          panner.connect(master);
+          panner.connect(roomFilter);
+        } else {
+          gain.connect(master);
+          gain.connect(roomFilter);
+        }
+
+        src.start(hitTime);
+        src.stop(hitTime + 0.048);
+
+        cursor += basePeriod * (0.85 + Math.random() * 0.3);
+      }
+    }
+  } catch {
+    // Ignore WebAudio playback restrictions
   }
 }

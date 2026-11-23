@@ -29,9 +29,12 @@ import {
   restoreSingleWinner,
   saveSpinnerConfig,
   setGuestGroups,
+  startWheelSpinTicks,
+  unlockAudio,
   useSpinnerStore,
   type Guest,
   type SpinnerConfig,
+  type WheelTickController,
 } from '../store';
 
 const SPINNER_PRESETS = [
@@ -93,6 +96,7 @@ export function SettingsPage() {
 
   const previewWheelRef = useRef<SVGSVGElement | null>(null);
   const previewAnimationRef = useRef<Animation | null>(null);
+  const previewTicksRef = useRef<WheelTickController | null>(null);
   const previewRotationRef = useRef(0);
   const [isPreviewSpinning, setIsPreviewSpinning] = useState(false);
 
@@ -104,6 +108,10 @@ export function SettingsPage() {
 
   useEffect(() => {
     return () => {
+      if (previewTicksRef.current) {
+        previewTicksRef.current.stop();
+        previewTicksRef.current = null;
+      }
       if (previewAnimationRef.current) {
         previewAnimationRef.current.onfinish = null;
         previewAnimationRef.current.cancel();
@@ -475,6 +483,10 @@ export function SettingsPage() {
     const wheel = previewWheelRef.current;
     if (!wheel) return;
 
+    if (previewTicksRef.current) {
+      previewTicksRef.current.stop();
+      previewTicksRef.current = null;
+    }
     if (previewAnimationRef.current) {
       previewAnimationRef.current.onfinish = null;
       previewAnimationRef.current.cancel();
@@ -499,7 +511,24 @@ export function SettingsPage() {
     });
     previewAnimationRef.current = anim;
 
+    if (configDraft.pegSoundEnabled) {
+      unlockAudio();
+      previewTicksRef.current = startWheelSpinTicks({
+        startAngle,
+        targetAngle,
+        durationSec: draftDurationSec,
+        cruisePct: draftCruisePct,
+        slowDown: draftSlowDown,
+        numSegments: PREVIEW_SLICE_COLORS.length,
+        muted: false,
+      });
+    }
+
     anim.onfinish = () => {
+      if (previewTicksRef.current) {
+        previewTicksRef.current.stop();
+        previewTicksRef.current = null;
+      }
       const settled = ((targetAngle % 360) + 360) % 360;
       previewRotationRef.current = settled;
       if (previewWheelRef.current) {
@@ -526,6 +555,10 @@ export function SettingsPage() {
       spinnerDurationSec: draftDurationSec,
       spinnerCruisePct: draftCruisePct,
       spinnerSlowDown: draftSlowDown,
+      winningSoundEnabled: configDraft.winningSoundEnabled,
+      pegSoundEnabled: configDraft.pegSoundEnabled,
+      confettiEnabled: configDraft.confettiEnabled,
+      rotationEnabled: configDraft.rotationEnabled,
     });
     setConfigDirty(false);
     setStatusMessage({ type: 'success', text: 'Spinner settings saved locally.' });
@@ -777,6 +810,76 @@ export function SettingsPage() {
                   </p>
                 </div>
 
+                <div className="space-y-3 pt-3 border-t border-slate-800">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Sound &amp; Celebration Effects</div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Choose which audio and visual effects run during spins and winner reveals.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {(
+                      [
+                        {
+                          key: 'winningSoundEnabled',
+                          label: 'Winning Sound',
+                          desc: 'Audience clapping applause when landing on a winner.',
+                        },
+                        {
+                          key: 'pegSoundEnabled',
+                          label: 'Spinner Peg Sound',
+                          desc: 'Game-show wooden peg clicks while spinning.',
+                        },
+                        {
+                          key: 'confettiEnabled',
+                          label: 'Confetti',
+                          desc: 'Confetti cannons and falling star celebration.',
+                        },
+                        {
+                          key: 'rotationEnabled',
+                          label: 'Rotation',
+                          desc: '360° stage and winner spotlight spin reveal.',
+                        },
+                      ] as const
+                    ).map((item) => {
+                      const enabled = configDraft[item.key];
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          role="switch"
+                          aria-checked={enabled}
+                          onClick={() => updateDraftField(item.key, !enabled)}
+                          className={`flex items-center justify-between gap-3 p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                            enabled
+                              ? 'bg-[#00477f]/45 border-sky-300/45 text-white'
+                              : 'bg-[#070B19] border-slate-800 text-slate-300 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white">{item.label}</div>
+                            <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                              {item.desc}
+                            </div>
+                          </div>
+                          <span
+                            className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              enabled ? 'bg-amber-400' : 'bg-slate-700'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-[#070B19] transition-transform ${
+                                enabled ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                   <button
                     type="submit"
@@ -793,6 +896,10 @@ export function SettingsPage() {
                         spinnerDurationSec: DEFAULT_CONFIG.spinnerDurationSec,
                         spinnerCruisePct: DEFAULT_CONFIG.spinnerCruisePct,
                         spinnerSlowDown: DEFAULT_CONFIG.spinnerSlowDown,
+                        winningSoundEnabled: DEFAULT_CONFIG.winningSoundEnabled,
+                        pegSoundEnabled: DEFAULT_CONFIG.pegSoundEnabled,
+                        confettiEnabled: DEFAULT_CONFIG.confettiEnabled,
+                        rotationEnabled: DEFAULT_CONFIG.rotationEnabled,
                       }));
                     }}
                     className="px-4 py-3 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white cursor-pointer"
