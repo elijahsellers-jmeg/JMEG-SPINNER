@@ -9,11 +9,11 @@ function Navbar() {
   const isSettingsActive = location.pathname === '/settings';
 
   return (
-    <header className="sticky top-0 z-40 border-b border-amber-400/20 bg-[#070B19]/95 backdrop-blur-md">
+    <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-8">
         <Link
           to="/"
-          className="font-display text-2xl font-bold tracking-tight text-amber-300 whitespace-nowrap shrink-0 hover:text-amber-200 transition-colors"
+          className="font-display text-2xl font-bold tracking-tight text-[#004881] whitespace-nowrap shrink-0 hover:text-[#003764] transition-colors"
         >
           JMEG Events
         </Link>
@@ -23,8 +23,8 @@ function Navbar() {
             to="/"
             className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
               isSpinnerActive
-                ? 'border-amber-400 text-amber-300'
-                : 'border-transparent text-slate-300 hover:text-white'
+                ? 'border-[#004881] text-[#004881] font-semibold'
+                : 'border-transparent text-slate-600 hover:text-[#004881]'
             }`}
           >
             Spinner
@@ -33,8 +33,8 @@ function Navbar() {
             to="/settings"
             className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
               isSettingsActive
-                ? 'border-amber-400 text-amber-300'
-                : 'border-transparent text-slate-300 hover:text-white'
+                ? 'border-[#004881] text-[#004881] font-semibold'
+                : 'border-transparent text-slate-600 hover:text-[#004881]'
             }`}
           >
             Settings
@@ -48,7 +48,7 @@ function Navbar() {
 export default function App() {
   return (
     <HashRouter>
-      <div className="min-h-screen flex flex-col bg-[#070B19] text-slate-100">
+      <div className="min-h-screen flex flex-col bg-[#F4F7FB] text-slate-900">
         <Navbar />
         <main className="flex-1">
           <Routes>
@@ -59,7 +59,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        <footer className="border-t border-slate-800/80 py-6 px-4 sm:px-8 text-center text-xs text-slate-500">
+        <footer className="border-t border-slate-200 bg-white/70 py-6 px-4 sm:px-8 text-center text-xs text-slate-500">
           JMEG Events · Prize Spinner
         </footer>
       </div>

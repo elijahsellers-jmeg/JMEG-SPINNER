@@ -4,6 +4,7 @@ import confetti from 'canvas-confetti';
 import {
   Award,
   Layers,
+  Maximize2,
   RotateCcw,
   Settings,
   Sparkles,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   buildSpinnerKeyframes,
+  hasWonInPool,
   markGuestWinner,
   playWinningSound,
   startWheelSpinTicks,
@@ -50,14 +52,14 @@ function getSliceColor(index: number, total: number): string {
 }
 
 const CONFETTI_COLORS = [
-  '#EF4444',
-  '#F59E0B',
-  '#FACC15',
-  '#10B981',
+  '#004881',
   '#0EA5E9',
-  '#3B82F6',
+  '#F59E0B',
+  '#10B981',
+  '#EF4444',
   '#8B5CF6',
   '#EC4899',
+  '#FACC15',
 ];
 
 interface EmblemDrop {
@@ -73,6 +75,7 @@ export function SpinnerPage() {
 
   const [excludePreviousWinners, setExcludePreviousWinners] = useState(true);
   const [muted, setMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [isSpinning, setIsSpinning] = useState(false);
   const [winner, setWinner] = useState<Guest | null>(null);
@@ -82,6 +85,8 @@ export function SpinnerPage() {
   const [popupAnim, setPopupAnim] = useState<'spin' | 'pop' | 'none'>('none');
   const [emblems, setEmblems] = useState<EmblemDrop[]>([]);
 
+  const fullscreenStageRef = useRef<HTMLDivElement | null>(null);
+  const confettiCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const wheelCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const currentRotationRef = useRef(0);
   const spinAnimationRef = useRef<Animation | null>(null);
@@ -102,14 +107,8 @@ export function SpinnerPage() {
   }, []);
 
   useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.style.position = 'fixed';
-    canvas.style.inset = '0';
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.pointerEvents = 'none';
-    canvas.style.zIndex = '65';
-    document.body.appendChild(canvas);
+    const canvas = confettiCanvasRef.current;
+    if (!canvas) return;
 
     let launcher: confetti.CreateTypes;
     try {
@@ -144,9 +143,34 @@ export function SpinnerPage() {
         // Ignore worker reset errors on teardown
       }
       confettiLauncherRef.current = null;
-      canvas.remove();
     };
   }, [clearCelebrationTimers]);
+
+  // Keep fullscreen state synchronized with browser Fullscreen API
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        setIsFullscreen(false);
+      } else if (document.fullscreenElement === fullscreenStageRef.current) {
+        setIsFullscreen(true);
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const enterFullscreen = async () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    setIsFullscreen(true);
+    const el = fullscreenStageRef.current;
+    if (el && el.requestFullscreen && !document.fullscreenElement) {
+      try {
+        await el.requestFullscreen();
+      } catch {
+        // Fallback fixed viewport overlay remains active if Fullscreen API is blocked
+      }
+    }
+  };
 
   const activeGroup = (searchParams.get('group') ?? '').trim();
 
@@ -157,7 +181,7 @@ export function SpinnerPage() {
         const key = grp.toLowerCase();
         const existing = map.get(key) ?? { name: grp, total: 0, eligible: 0 };
         existing.total += 1;
-        if (!guest.wonPrizeAt) existing.eligible += 1;
+        if (!hasWonInPool(guest, grp)) existing.eligible += 1;
         map.set(key, existing);
       }
     }
@@ -166,6 +190,7 @@ export function SpinnerPage() {
 
   const selectGroup = (groupName: string) => {
     if (isSpinning) return;
+    setLastWinner(null);
     if (!groupName) {
       searchParams.delete('group');
       setSearchParams(searchParams);
@@ -183,9 +208,9 @@ export function SpinnerPage() {
   const eligibleGuests = useMemo(
     () =>
       excludePreviousWinners
-        ? groupFilteredGuests.filter((g) => !g.wonPrizeAt)
+        ? groupFilteredGuests.filter((g) => !hasWonInPool(g, activeGroup))
         : groupFilteredGuests,
-    [groupFilteredGuests, excludePreviousWinners]
+    [groupFilteredGuests, excludePreviousWinners, activeGroup]
   );
 
   const numSegments = eligibleGuests.length;
@@ -197,7 +222,7 @@ export function SpinnerPage() {
     if (!canvas || numSegments === 0) return;
 
     const dpr = Math.max(2, Math.min(window.devicePixelRatio || 1, 2));
-    const displaySize = 440;
+    const displaySize = 760;
     canvas.width = displaySize * dpr;
     canvas.height = displaySize * dpr;
 
@@ -221,11 +246,11 @@ export function SpinnerPage() {
     const sliceRad = (2 * Math.PI) / numSegments;
     const showSliceBorders = numSegments <= 90;
     const showLabels = numSegments <= 64;
-    const seamOverlapRad = showSliceBorders || numSegments === 1 ? 0 : Math.min(0.003, sliceRad * 0.15);
+    const seamOverlapRad =
+      showSliceBorders || numSegments === 1 ? 0 : Math.min(0.003, sliceRad * 0.15);
     const fontSize =
-      numSegments <= 10 ? 14 : numSegments <= 20 ? 12 : numSegments <= 36 ? 10 : 8.5;
+      numSegments <= 10 ? 22 : numSegments <= 20 ? 19 : numSegments <= 36 ? 15.5 : 13;
 
-    // 1. Solid vibrant slice wedges
     for (let i = 0; i < numSegments; i++) {
       const startAngle = i * sliceRad - Math.PI / 2;
       const endAngle = (i + 1) * sliceRad - Math.PI / 2 + seamOverlapRad;
@@ -238,30 +263,28 @@ export function SpinnerPage() {
       ctx.fill();
     }
 
-    // 2. Clean radial divider lines when slice width allows
     if (showSliceBorders && numSegments > 1) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.32)';
-      ctx.lineWidth = numSegments > 32 ? 0.75 : 1.35;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+      ctx.lineWidth = numSegments > 32 ? 1.1 : 1.8;
       ctx.lineCap = 'butt';
       for (let i = 0; i < numSegments; i++) {
         const a = i * sliceRad - Math.PI / 2;
         ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(a) * 3, cy + Math.sin(a) * 3);
+        ctx.moveTo(cx + Math.cos(a) * 4, cy + Math.sin(a) * 4);
         ctx.lineTo(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius);
         ctx.stroke();
       }
     }
 
-    // 3. Guest name labels when legible
     if (showLabels) {
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.font = `700 ${fontSize}px "Plus Jakarta Sans", system-ui, sans-serif`;
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = 'rgba(7, 11, 25, 0.85)';
-      ctx.lineWidth = 2.6;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.lineWidth = 4;
       ctx.fillStyle = '#FFFFFF';
-      const maxLabelWidth = radius - 42;
+      const maxLabelWidth = radius - 70;
 
       for (let i = 0; i < numSegments; i++) {
         const midAngle = (i + 0.5) * sliceRad - Math.PI / 2;
@@ -276,8 +299,8 @@ export function SpinnerPage() {
           }
           label = `${label}…`;
         }
-        ctx.strokeText(label, radius - 16, 0);
-        ctx.fillText(label, radius - 16, 0);
+        ctx.strokeText(label, radius - 24, 0);
+        ctx.fillText(label, radius - 24, 0);
         ctx.restore();
       }
     }
@@ -375,7 +398,7 @@ export function SpinnerPage() {
         scalar: 1.15,
         ticks: 180,
         origin: { x: 0.5, y: 0.3 },
-        colors: ['#FACC15', '#D4AF37', '#FEF3C7'],
+        colors: ['#004881', '#F59E0B', '#0EA5E9'],
         shapes: ['star'],
       });
       launchCannons(20, 48, 55);
@@ -459,14 +482,17 @@ export function SpinnerPage() {
       setWinner(chosenWinner);
       setLastWinner(chosenWinner);
       triggerExtravaganza();
-      markGuestWinner(chosenWinner.id);
+      markGuestWinner(chosenWinner.id, activeGroup);
     };
 
     setWinner(null);
     setIsSpinning(true);
   };
 
-  const handleCloseWinner = () => {
+  const handleSpinRef = useRef(handleSpin);
+  handleSpinRef.current = handleSpin;
+
+  const handleCloseWinner = useCallback(() => {
     clearCelebrationTimers();
     try {
       confettiLauncherRef.current?.reset();
@@ -478,17 +504,53 @@ export function SpinnerPage() {
     setPopupAnim('none');
     setEmblems([]);
     setWinner(null);
-  };
+  }, [clearCelebrationTimers]);
+
+  // Fullscreen keyboard shortcuts: Space to spin, Escape to exit fullscreen
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (!e.repeat) {
+          handleSpinRef.current();
+        }
+      } else if (e.key === 'Escape') {
+        if (!document.fullscreenElement) {
+          setIsFullscreen(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
+
+  const fullscreenTitle = activeGroup;
 
   return (
-    <>
+    <div
+      ref={fullscreenStageRef}
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-50 h-screen w-screen overflow-hidden flex flex-col justify-between bg-[#F4F7FB] text-slate-900'
+          : 'min-h-[calc(100vh-4rem)] relative overflow-hidden flex flex-col justify-between bg-[#F4F7FB] text-slate-900'
+      }
+    >
+      {/* Confetti Canvas mounted inside stage so it works in native Fullscreen */}
+      <canvas
+        ref={confettiCanvasRef}
+        className="fixed inset-0 w-full h-full pointer-events-none z-[65]"
+      />
+
       {isCelebrating && (
         <div
           aria-hidden="true"
           className="fixed inset-0 z-[5] pointer-events-none animate-gala-glow"
           style={{
             background:
-              'radial-gradient(circle at 50% 42%, rgba(0, 71, 127, 0.72), rgba(250, 204, 21, 0.16) 42%, rgba(7, 11, 25, 0) 78%)',
+              'radial-gradient(circle at 50% 44%, rgba(0, 72, 129, 0.16), rgba(245, 158, 11, 0.12) 42%, rgba(244, 247, 251, 0) 76%)',
           }}
         />
       )}
@@ -496,7 +558,7 @@ export function SpinnerPage() {
       {emblems.map((drop) => (
         <div
           key={drop.id}
-          className="gala-emblem-drop text-amber-300 text-3xl select-none"
+          className="gala-emblem-drop text-amber-500 text-3xl select-none"
           style={{
             left: drop.left,
             animationDelay: drop.delay,
@@ -508,66 +570,77 @@ export function SpinnerPage() {
       ))}
 
       <div
-        className={`min-h-[calc(100vh-4rem)] relative overflow-hidden flex flex-col justify-between bg-[#070B19] ${
+        className={`flex-1 flex flex-col justify-between relative ${
           viewportSpinning ? 'animate-viewport-spin' : ''
         }`}
       >
-        {/* Top Stage Controls Bar */}
-        <div className="max-w-7xl w-full mx-auto px-4 sm:px-8 pt-6 flex flex-wrap items-center justify-between gap-4 relative z-20">
-          <div className="flex items-center gap-4">
-            <Link
-              to="/settings"
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-amber-300 transition-colors"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span>Spinner Settings</span>
-            </Link>
-            <span className="text-slate-700" aria-hidden="true">
-              |
-            </span>
-            <span className="text-xs font-mono text-amber-300 tabular-nums">
-              {eligibleGuests.length} Eligible Guests
-            </span>
+        {/* Top Stage Controls Bar (hidden in fullscreen) */}
+        {!isFullscreen && (
+          <div className="max-w-7xl w-full mx-auto px-4 sm:px-8 pt-4 flex flex-wrap items-center justify-between gap-3 relative z-20">
+            <div className="flex items-center gap-4">
+              <Link
+                to="/settings"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#004881] transition-colors"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Spinner Settings</span>
+              </Link>
+              <span className="text-slate-300" aria-hidden="true">
+                |
+              </span>
+              <span className="text-xs font-mono font-semibold text-[#004881] tabular-nums">
+                {eligibleGuests.length} Eligible Guests
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Link
+                to="/settings"
+                className="hidden sm:inline-flex items-center text-xs font-mono text-slate-500 hover:text-[#004881] transition-colors tabular-nums mr-1"
+                title="Adjust spin duration & slow-down curve in Settings"
+              >
+                {durationSec.toFixed(1)}s spin · tail {slowDown.toFixed(1)}/10
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => setExcludePreviousWinners((v) => !v)}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  excludePreviousWinners
+                    ? 'bg-[#004881] border-[#004881] text-white'
+                    : 'bg-white border-slate-300 text-slate-700 hover:border-[#004881]/50'
+                }`}
+              >
+                {excludePreviousWinners ? 'Excluding Prior Winners' : 'Including All Guests'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMuted((m) => !m)}
+                aria-label={muted ? 'Unmute wheel sound' : 'Mute wheel sound'}
+                className="p-2 rounded-lg bg-white border border-slate-300 text-[#004881] hover:border-[#004881] transition-colors cursor-pointer"
+              >
+                {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={enterFullscreen}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-white border border-[#004881]/35 text-xs font-semibold text-[#004881] hover:bg-[#004881] hover:text-white transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Fullscreen</span>
+              </button>
+            </div>
           </div>
+        )}
 
-          <div className="flex items-center gap-3">
-            <Link
-              to="/settings"
-              className="hidden sm:inline-flex items-center text-xs font-mono text-slate-400 hover:text-amber-300 transition-colors tabular-nums"
-              title="Adjust spin duration & slow-down curve in Settings"
-            >
-              {durationSec.toFixed(1)}s spin · tail {slowDown.toFixed(1)}/10
-            </Link>
-
-            <button
-              type="button"
-              onClick={() => setExcludePreviousWinners((v) => !v)}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-                excludePreviousWinners
-                  ? 'bg-[#00477f] border-sky-300/45 text-sky-50'
-                  : 'bg-[#111833] border-slate-700 text-slate-400'
-              }`}
-            >
-              {excludePreviousWinners ? 'Excluding Prior Winners' : 'Including All Guests'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMuted((m) => !m)}
-              aria-label={muted ? 'Unmute wheel sound' : 'Mute wheel sound'}
-              className="p-2 rounded-lg bg-[#111833] border border-slate-700 text-amber-300 hover:border-amber-400/50 cursor-pointer"
-            >
-              {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {/* Group Spinner Selector Strip */}
-        {(groupStats.length > 0 || activeGroup) && (
-          <div className="max-w-7xl w-full mx-auto px-4 sm:px-8 pt-3 relative z-20">
-            <div className="flex flex-wrap items-center gap-2 bg-[#111833]/80 border border-slate-800 rounded-xl px-3.5 py-2.5">
-              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-300 mr-1 whitespace-nowrap">
-                <Layers className="w-3.5 h-3.5 text-amber-300" />
+        {/* Group Spinner Selector Strip (hidden in fullscreen) */}
+        {!isFullscreen && (groupStats.length > 0 || activeGroup) && (
+          <div className="max-w-7xl w-full mx-auto px-4 sm:px-8 pt-2.5 relative z-20">
+            <div className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 shadow-sm rounded-xl px-3.5 py-2">
+              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 mr-1 whitespace-nowrap">
+                <Layers className="w-3.5 h-3.5 text-[#004881]" />
                 <span>Spinner Pool:</span>
               </div>
               <button
@@ -576,12 +649,12 @@ export function SpinnerPage() {
                 onClick={() => selectGroup('')}
                 className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50 ${
                   !activeGroup
-                    ? 'bg-amber-400 text-[#070B19]'
-                    : 'bg-[#070B19] border border-slate-700 text-slate-300 hover:border-amber-400/50'
+                    ? 'bg-[#004881] text-white'
+                    : 'bg-[#F4F7FB] border border-slate-200 text-slate-700 hover:border-[#004881]/50 hover:text-[#004881]'
                 }`}
               >
                 All Guests (
-                {excludePreviousWinners ? guests.filter((g) => !g.wonPrizeAt).length : guests.length})
+                {excludePreviousWinners ? guests.filter((g) => !hasWonInPool(g)).length : guests.length})
               </button>
               {groupStats.map((grp) => {
                 const isSelected = activeGroup.toLowerCase() === grp.name.toLowerCase();
@@ -594,8 +667,8 @@ export function SpinnerPage() {
                     onClick={() => selectGroup(grp.name)}
                     className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50 tabular-nums ${
                       isSelected
-                        ? 'bg-[#00477f] border border-sky-300/60 text-sky-50'
-                        : 'bg-[#070B19] border border-slate-700 text-slate-300 hover:border-sky-300/50'
+                        ? 'bg-[#004881] text-white'
+                        : 'bg-[#F4F7FB] border border-slate-200 text-slate-700 hover:border-[#004881]/50 hover:text-[#004881]'
                     }`}
                   >
                     {grp.name} ({count})
@@ -604,7 +677,7 @@ export function SpinnerPage() {
               })}
               {activeGroup &&
                 !groupStats.some((g) => g.name.toLowerCase() === activeGroup.toLowerCase()) && (
-                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-[#00477f] border border-sky-300/60 text-sky-50">
+                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-[#004881] text-white">
                     {activeGroup} (0)
                   </span>
                 )}
@@ -613,20 +686,36 @@ export function SpinnerPage() {
         )}
 
         {/* Main Stage Centerpiece */}
-        <div className="flex-1 flex flex-col items-center justify-center px-4 py-6 relative z-10">
-          <div className="text-center mb-6 space-y-1">
-            <div className="text-xs font-semibold tracking-[0.22em] text-amber-300 uppercase">
-              {activeGroup ? `${config.title} · Group: ${activeGroup}` : config.title}
+        <div
+          className={`flex-1 flex flex-col items-center justify-center px-4 relative z-10 ${
+            isFullscreen ? 'py-2 gap-4' : 'py-3 gap-3'
+          }`}
+        >
+          {isFullscreen ? (
+            fullscreenTitle ? (
+              <div className="text-center pb-1">
+                <h1 className="font-display text-3xl sm:text-4xl font-bold text-[#004881]">
+                  {fullscreenTitle}
+                </h1>
+              </div>
+            ) : null
+          ) : (
+            <div className="text-center mb-1 space-y-0.5">
+              {activeGroup && (
+                <div className="text-[11px] font-semibold tracking-[0.22em] text-[#004881] uppercase">
+                  {activeGroup}
+                </div>
+              )}
+              <h1 className="font-display text-3xl sm:text-4xl font-bold text-slate-900">
+                Prize Spinner
+              </h1>
             </div>
-            <h1 className="font-display text-4xl sm:text-5xl font-bold text-white">
-              Prize Spinner
-            </h1>
-          </div>
+          )}
 
           {numSegments === 0 ? (
-            <div className="max-w-md w-full bg-[#111833] border border-amber-400/25 rounded-2xl p-8 text-center space-y-4 my-8">
-              <Award className="w-12 h-12 text-amber-300 mx-auto" />
-              <h2 className="font-display text-3xl font-bold text-white">
+            <div className="max-w-md w-full bg-white border border-slate-200 shadow-sm rounded-2xl p-8 text-center space-y-4 my-8">
+              <Award className="w-12 h-12 text-[#004881] mx-auto" />
+              <h2 className="font-display text-3xl font-bold text-slate-900">
                 {groupFilteredGuests.length === 0
                   ? activeGroup
                     ? `No Guests in "${activeGroup}"`
@@ -635,38 +724,48 @@ export function SpinnerPage() {
                   ? `All Guests in "${activeGroup}" Drawn`
                   : 'All Guests Drawn'}
               </h2>
-              <p className="text-sm text-slate-300 leading-relaxed">
+              <p className="text-sm text-slate-600 leading-relaxed">
                 {groupFilteredGuests.length === 0
                   ? activeGroup
                     ? `Assign the "${activeGroup}" grouping to guests in Spinner Settings, or switch back to All Guests.`
                     : 'Add participants individually or bulk import a guest list in Spinner Settings.'
                   : 'Every eligible guest in this pool has already been drawn. Reset winners in Spinner Settings or toggle "Including All Guests" above.'}
               </p>
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                {activeGroup && (
-                  <button
-                    type="button"
-                    onClick={() => selectGroup('')}
-                    className="inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-[#00477f] border border-sky-300/45 text-sky-50 text-sm font-semibold hover:bg-[#00599e] cursor-pointer"
+              {!isFullscreen && (
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  {activeGroup && (
+                    <button
+                      type="button"
+                      onClick={() => selectGroup('')}
+                      className="inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:border-[#004881] hover:text-[#004881] cursor-pointer"
+                    >
+                      All Guests Pool
+                    </button>
+                  )}
+                  <Link
+                    to="/settings"
+                    className="inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-[#004881] text-white text-sm font-bold hover:bg-[#003764]"
                   >
-                    All Guests Pool
-                  </button>
-                )}
-                <Link
-                  to="/settings"
-                  className="inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-amber-400 text-[#070B19] text-sm font-bold hover:bg-amber-300"
-                >
-                  Open Settings
-                </Link>
-              </div>
+                    Open Settings
+                  </Link>
+                </div>
+              )}
             </div>
           ) : (
-            <div className="flex flex-col items-center space-y-8">
+            <div className={`flex flex-col items-center ${isFullscreen ? '' : 'space-y-5'}`}>
               {/* Wheel Assembly */}
-              <div className="relative select-none">
-                <div className="absolute -inset-3 rounded-full bg-gradient-to-tr from-amber-600 via-amber-200 to-amber-500 opacity-85 shadow-2xl" />
+              <div className="relative select-none mt-3">
+                <div className="absolute -inset-3 rounded-full bg-gradient-to-tr from-[#004881] via-[#2B7BB9] to-[#003764] opacity-90 shadow-xl shadow-[#004881]/20" />
 
-                <div className="relative w-[310px] h-[310px] sm:w-[440px] sm:h-[440px] rounded-full border-[6px] border-[#070B19] bg-[#070B19] shadow-2xl">
+                <div
+                  className={`relative rounded-full border-[6px] sm:border-[8px] border-[#004881] bg-white shadow-xl ${
+                    isFullscreen
+                      ? fullscreenTitle
+                        ? 'w-[min(90vw,80vh)] h-[min(90vw,80vh)]'
+                        : 'w-[min(92vw,84vh)] h-[min(92vw,84vh)]'
+                      : 'w-[min(90vw,64vh)] h-[min(90vw,64vh)]'
+                  }`}
+                >
                   <canvas
                     ref={wheelCanvasRef}
                     className="w-full h-full block rounded-full"
@@ -681,62 +780,79 @@ export function SpinnerPage() {
                 {/* High-Contrast Top Pointer */}
                 <svg
                   viewBox="0 0 36 40"
-                  className="w-9 h-10 absolute -top-5 left-1/2 -translate-x-1/2 z-30 drop-shadow-[0_4px_12px_rgba(7,11,25,0.85)]"
+                  className="w-10 h-11 sm:w-11 sm:h-12 absolute -top-6 left-1/2 -translate-x-1/2 z-30 drop-shadow-[0_4px_10px_rgba(0,72,129,0.4)]"
                   aria-hidden="true"
                 >
                   <polygon
                     points="18,38 3,4 33,4"
                     fill="#FACC15"
-                    stroke="#070B19"
+                    stroke="#004881"
                     strokeWidth="3.5"
                     strokeLinejoin="round"
                   />
                 </svg>
               </div>
 
-              {/* Spin Action */}
-              <div className="min-h-[84px] flex flex-col items-center justify-center text-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleSpin}
-                  disabled={isSpinning || numSegments < 1 || winner !== null}
-                  className="px-10 py-4 rounded-full bg-gradient-to-b from-amber-300 to-amber-500 text-[#070B19] font-extrabold text-lg uppercase tracking-wider shadow-xl hover:from-amber-200 hover:to-amber-400 active:translate-y-0.5 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isSpinning ? 'Spinning the Wheel...' : 'Spin the Wheel'}
-                </button>
-
-                {lastWinner && !winner && !isSpinning && (
+              {/* Spin Action (hidden in fullscreen; Space spins) */}
+              {!isFullscreen && (
+                <div className="min-h-[72px] flex flex-col items-center justify-center text-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      setPopupAnim('pop');
-                      setWinner(lastWinner);
-                    }}
-                    className="text-xs text-amber-300 hover:text-amber-200 underline cursor-pointer"
+                    onClick={handleSpin}
+                    disabled={isSpinning || numSegments < 1 || winner !== null}
+                    className="px-10 py-3.5 rounded-full bg-[#004881] text-white font-extrabold text-base sm:text-lg uppercase tracking-wider shadow-lg shadow-[#004881]/25 hover:bg-[#003764] active:translate-y-0.5 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Last Selected: {lastWinner.fullName} (View Spotlight)
+                    {isSpinning ? 'Spinning the Wheel...' : 'Spin the Wheel'}
                   </button>
-                )}
-              </div>
+
+                  {lastWinner && !winner && !isSpinning && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPopupAnim('pop');
+                        setWinner(lastWinner);
+                      }}
+                      className="text-xs font-semibold text-[#004881] hover:underline cursor-pointer"
+                    >
+                      Last Selected: {lastWinner.fullName} (View Spotlight)
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <div className="pb-6 text-center text-xs text-slate-500">
-          JMEG Events · Live Prize Drawing
-        </div>
+        {/* Bottom Hint or Normal Footer */}
+        {isFullscreen ? (
+          <div className="pb-3 pt-1 px-4 text-center text-xs text-slate-500 relative z-20 select-none">
+            Press{' '}
+            <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-300 font-mono text-[11px] font-semibold text-[#004881]">
+              Space
+            </kbd>{' '}
+            to spin the wheel · Press{' '}
+            <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-300 font-mono text-[11px] font-semibold text-slate-700">
+              Esc
+            </kbd>{' '}
+            to exit fullscreen
+          </div>
+        ) : (
+          <div className="pb-3 text-center text-xs text-slate-500">
+            JMEG Events · Live Prize Drawing
+          </div>
+        )}
       </div>
 
-      {/* Persistent Full-Screen Winner Spotlight Overlay */}
+      {/* Persistent Full-Screen Winner Spotlight Overlay (inside stage container for Fullscreen compatibility) */}
       {winner && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-[#070B19]/88"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-slate-900/50 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           aria-labelledby="winner-spotlight-name"
         >
           <div
-            className={`relative max-w-2xl w-full bg-gradient-to-b from-[#00477f] via-[#111833] to-[#070B19] border-2 border-amber-400/70 rounded-3xl p-8 sm:p-12 text-center shadow-[0_0_50px_rgba(250,204,21,0.22)] space-y-6 ${
+            className={`relative max-w-2xl w-full bg-white border-2 border-[#004881]/30 rounded-3xl p-8 sm:p-12 text-center shadow-2xl space-y-6 ${
               popupAnim === 'spin'
                 ? 'animate-popup-spin'
                 : popupAnim === 'pop'
@@ -748,41 +864,43 @@ export function SpinnerPage() {
               type="button"
               onClick={handleCloseWinner}
               aria-label="Close winner announcement"
-              className="absolute top-5 right-5 w-10 h-10 rounded-full border border-slate-700 bg-[#070B19]/80 text-slate-300 hover:text-white hover:border-amber-400 flex items-center justify-center transition-colors cursor-pointer"
+              className="absolute top-5 right-5 w-10 h-10 rounded-full border border-slate-200 bg-slate-50 text-slate-500 hover:text-[#004881] hover:border-[#004881]/40 flex items-center justify-center transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
 
-            <div className="inline-flex items-center gap-2 text-xs sm:text-sm font-bold tracking-[0.26em] text-amber-300 uppercase pt-2">
-              <Sparkles className="w-4 h-4" />
+            <div className="inline-flex items-center gap-2 text-xs sm:text-sm font-bold tracking-[0.24em] text-[#004881] uppercase pt-2">
+              <Sparkles className="w-4 h-4 text-amber-500" />
               <span>Ladies and Gentlemen</span>
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="w-4 h-4 text-amber-500" />
             </div>
 
             <h2
               id="winner-spotlight-name"
-              className="font-display text-5xl sm:text-7xl font-bold text-white leading-tight break-words"
+              className="font-display text-5xl sm:text-7xl font-bold text-slate-900 leading-tight break-words"
               style={{ textWrap: 'balance' }}
             >
               {winner.fullName}
             </h2>
 
             <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-base sm:text-xl font-mono text-amber-200 tabular-nums">
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-base sm:text-xl font-mono font-semibold text-[#004881] tabular-nums">
                 <span>Employee #: {winner.employeeId}</span>
                 {winner.division && (
                   <>
-                    <span className="text-amber-400/50" aria-hidden="true">
+                    <span className="text-slate-300" aria-hidden="true">
                       ·
                     </span>
-                    <span className="font-sans font-semibold text-sky-200">{winner.division}</span>
+                    <span className="font-sans font-semibold text-slate-700">
+                      {winner.division}
+                    </span>
                   </>
                 )}
               </div>
               {winner.groups.length > 0 && (
-                <div className="text-xs font-mono text-sky-300">{winner.groups.join(' · ')}</div>
+                <div className="text-xs font-mono text-slate-600">{winner.groups.join(' · ')}</div>
               )}
-              <div className="text-xs text-slate-400">{config.title}</div>
+              <div className="text-xs text-slate-500">{config.title}</div>
             </div>
 
             <div className="pt-4 flex flex-wrap items-center justify-center gap-3">
@@ -790,7 +908,7 @@ export function SpinnerPage() {
                 <button
                   type="button"
                   onClick={triggerExtravaganza}
-                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-sky-300/45 bg-[#00477f] text-sky-50 text-sm font-semibold hover:bg-[#00599e] transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-slate-300 bg-slate-50 text-[#004881] text-sm font-semibold hover:bg-[#004881]/5 hover:border-[#004881]/40 transition-colors cursor-pointer"
                 >
                   <RotateCcw className="w-4 h-4" />
                   <span>Replay Effects</span>
@@ -800,7 +918,7 @@ export function SpinnerPage() {
               <button
                 type="button"
                 onClick={handleCloseWinner}
-                className="px-8 py-3 rounded-xl bg-amber-400 text-[#070B19] text-sm font-extrabold uppercase tracking-wide hover:bg-amber-300 transition-colors cursor-pointer"
+                className="px-8 py-3 rounded-xl bg-[#004881] text-white text-sm font-extrabold uppercase tracking-wide hover:bg-[#003764] transition-colors cursor-pointer"
               >
                 Close &amp; Continue
               </button>
@@ -808,6 +926,6 @@ export function SpinnerPage() {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

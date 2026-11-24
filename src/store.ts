@@ -18,7 +18,19 @@ export interface Guest {
   division: string;
   groups: string[];
   wonPrizeAt: string;
+  wonByPool: Record<string, string>;
   createdAt: string;
+}
+
+export const ALL_POOL_KEY = '__all__';
+
+export function getPoolKey(groupName?: string): string {
+  const trimmed = (groupName ?? '').trim().toLowerCase();
+  return trimmed || ALL_POOL_KEY;
+}
+
+export function hasWonInPool(guest: Guest, groupName?: string): boolean {
+  return Boolean(guest.wonByPool[getPoolKey(groupName)]);
 }
 
 export const LIMITS = {
@@ -92,6 +104,29 @@ function clampConfig(raw: Partial<SpinnerConfig> | null | undefined): SpinnerCon
   };
 }
 
+function sanitizeWonByPool(rawMap: unknown, legacyWonAt: string): Record<string, string> {
+  const clean: Record<string, string> = {};
+  if (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) {
+    for (const [k, v] of Object.entries(rawMap as Record<string, unknown>)) {
+      if (typeof v !== 'string' || !v.trim()) continue;
+      clean[getPoolKey(k)] = v;
+    }
+    return clean;
+  }
+  if (legacyWonAt) {
+    clean[ALL_POOL_KEY] = legacyWonAt;
+  }
+  return clean;
+}
+
+function latestWonTimestamp(wonByPool: Record<string, string>): string {
+  let latest = '';
+  for (const ts of Object.values(wonByPool)) {
+    if (ts && ts > latest) latest = ts;
+  }
+  return latest;
+}
+
 function readGuests(): Guest[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -101,15 +136,23 @@ function readGuests(): Guest[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item) => ({
-        id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
-        fullName: String(item.fullName ?? '').trim().slice(0, LIMITS.MAX_FULL_NAME),
-        employeeId: String(item.employeeId ?? '').trim().slice(0, LIMITS.MAX_EMPLOYEE_ID),
-        division: typeof item.division === 'string' ? item.division.trim().slice(0, LIMITS.MAX_DIVISION) : '',
-        groups: normalizeGroupList(Array.isArray(item.groups) ? item.groups : []),
-        wonPrizeAt: typeof item.wonPrizeAt === 'string' ? item.wonPrizeAt : '',
-        createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
-      }))
+      .map((item) => {
+        const legacyWonAt = typeof item.wonPrizeAt === 'string' ? item.wonPrizeAt : '';
+        const wonByPool = sanitizeWonByPool(item.wonByPool, legacyWonAt);
+        return {
+          id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
+          fullName: String(item.fullName ?? '').trim().slice(0, LIMITS.MAX_FULL_NAME),
+          employeeId: String(item.employeeId ?? '').trim().slice(0, LIMITS.MAX_EMPLOYEE_ID),
+          division:
+            typeof item.division === 'string'
+              ? item.division.trim().slice(0, LIMITS.MAX_DIVISION)
+              : '',
+          groups: normalizeGroupList(Array.isArray(item.groups) ? item.groups : []),
+          wonPrizeAt: latestWonTimestamp(wonByPool),
+          wonByPool,
+          createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+        };
+      })
       .filter((g) => g.fullName.length > 0 && g.employeeId.length > 0);
   } catch {
     return [];
@@ -222,6 +265,7 @@ export function addOrUpdateGuest(
       division: cleanDivision,
       groups: cleanGroups,
       wonPrizeAt: '',
+      wonByPool: {},
       createdAt: new Date().toISOString(),
     },
   ];
@@ -266,6 +310,7 @@ export function bulkImportGuests(
         division: row.division,
         groups: normalizeGroupList(row.groups),
         wonPrizeAt: '',
+        wonByPool: {},
         createdAt: nowIso,
       };
       indexByEmpId.set(key, next.length);
@@ -278,9 +323,29 @@ export function bulkImportGuests(
   return { created, updated, skipped };
 }
 
+function pruneWonByPoolForGroups(
+  wonByPool: Record<string, string>,
+  groups: string[]
+): Record<string, string> {
+  const validGroupKeys = new Set(groups.map((grp) => getPoolKey(grp)));
+  const next: Record<string, string> = {};
+  for (const [k, ts] of Object.entries(wonByPool)) {
+    if (k === ALL_POOL_KEY || validGroupKeys.has(k)) {
+      next[k] = ts;
+    }
+  }
+  return next;
+}
+
 export function setGuestGroups(guestId: string, groups: string[]) {
   const clean = normalizeGroupList(groups);
-  persistGuests(state.guests.map((g) => (g.id === guestId ? { ...g, groups: clean } : g)));
+  persistGuests(
+    state.guests.map((g) => {
+      if (g.id !== guestId) return g;
+      const wonByPool = pruneWonByPoolForGroups(g.wonByPool, clean);
+      return { ...g, groups: clean, wonByPool, wonPrizeAt: latestWonTimestamp(wonByPool) };
+    })
+  );
 }
 
 export function bulkAdjustGuestGroups(guestIds: string[], groupNames: string[], mode: 'add' | 'remove') {
@@ -295,28 +360,64 @@ export function bulkAdjustGuestGroups(guestIds: string[], groupNames: string[], 
         mode === 'add'
           ? normalizeGroupList([...g.groups, ...cleanNames])
           : g.groups.filter((grp) => !removeSet.has(grp.toLowerCase()));
-      return { ...g, groups: nextGroups };
+      const wonByPool = pruneWonByPoolForGroups(g.wonByPool, nextGroups);
+      return {
+        ...g,
+        groups: nextGroups,
+        wonByPool,
+        wonPrizeAt: latestWonTimestamp(wonByPool),
+      };
     })
   );
 }
 
-export function markGuestWinner(guestId: string) {
+export function markGuestWinner(guestId: string, groupName?: string) {
   const wonAt = new Date().toISOString();
-  persistGuests(state.guests.map((g) => (g.id === guestId ? { ...g, wonPrizeAt: wonAt } : g)));
+  const poolKey = getPoolKey(groupName);
+  persistGuests(
+    state.guests.map((g) => {
+      if (g.id !== guestId) return g;
+      const wonByPool = { ...g.wonByPool, [poolKey]: wonAt };
+      return { ...g, wonByPool, wonPrizeAt: latestWonTimestamp(wonByPool) };
+    })
+  );
 }
 
-export function restoreSingleWinner(guestId: string) {
-  persistGuests(state.guests.map((g) => (g.id === guestId ? { ...g, wonPrizeAt: '' } : g)));
+export function restoreSingleWinner(guestId: string, groupName?: string) {
+  const hasPoolArg = groupName !== undefined;
+  const poolKey = hasPoolArg ? getPoolKey(groupName) : '';
+  persistGuests(
+    state.guests.map((g) => {
+      if (g.id !== guestId) return g;
+      if (!hasPoolArg) {
+        return { ...g, wonByPool: {}, wonPrizeAt: '' };
+      }
+      const nextPool = { ...g.wonByPool };
+      delete nextPool[poolKey];
+      return { ...g, wonByPool: nextPool, wonPrizeAt: latestWonTimestamp(nextPool) };
+    })
+  );
 }
 
 export function resetWinners(groupFilterName?: string): number {
   let count = 0;
-  const target = groupFilterName?.toLowerCase();
+  const hasFilter = groupFilterName !== undefined;
+  const targetPoolKey = hasFilter ? getPoolKey(groupFilterName) : '';
+
   const next = state.guests.map((g) => {
-    if (!g.wonPrizeAt) return g;
-    if (target && !g.groups.some((grp) => grp.toLowerCase() === target)) return g;
+    const keys = Object.keys(g.wonByPool);
+    if (keys.length === 0) return g;
+
+    if (!hasFilter) {
+      count += keys.length;
+      return { ...g, wonByPool: {}, wonPrizeAt: '' };
+    }
+
+    if (!g.wonByPool[targetPoolKey]) return g;
     count += 1;
-    return { ...g, wonPrizeAt: '' };
+    const nextPool = { ...g.wonByPool };
+    delete nextPool[targetPoolKey];
+    return { ...g, wonByPool: nextPool, wonPrizeAt: latestWonTimestamp(nextPool) };
   });
   if (count > 0) persistGuests(next);
   return count;

@@ -17,12 +17,14 @@ import {
 } from 'lucide-react';
 import {
   addOrUpdateGuest,
+  ALL_POOL_KEY,
   buildSpinnerKeyframes,
   bulkAdjustGuestGroups,
   bulkImportGuests,
   DEFAULT_CONFIG,
   deleteGuests,
   evalSpinnerRelativeSpeed,
+  hasWonInPool,
   LIMITS,
   normalizeGroupList,
   resetWinners,
@@ -121,7 +123,22 @@ export function SettingsPage() {
   }, []);
 
   const sortedGuests = [...guests].sort((a, b) => a.fullName.localeCompare(b.fullName));
-  const drawnWinners = sortedGuests.filter((g) => Boolean(g.wonPrizeAt));
+
+  const getPoolDisplayLabel = (guest: Guest, poolKey: string): string => {
+    if (poolKey === ALL_POOL_KEY) return 'All Guests';
+    return guest.groups.find((grp) => grp.toLowerCase() === poolKey) ?? poolKey;
+  };
+
+  const drawnPoolEntries = sortedGuests
+    .flatMap((guest) =>
+      Object.entries(guest.wonByPool).map(([poolKey, wonAt]) => ({
+        guest,
+        poolKey,
+        poolLabel: getPoolDisplayLabel(guest, poolKey),
+        wonAt,
+      }))
+    )
+    .sort((a, b) => b.wonAt.localeCompare(a.wonAt) || a.guest.fullName.localeCompare(b.guest.fullName));
 
   const groupSummaries = (() => {
     const map = new Map<
@@ -133,7 +150,7 @@ export function SettingsPage() {
         const key = grp.toLowerCase();
         const entry = map.get(key) ?? { name: grp, totalInPool: 0, eligible: 0, winners: 0 };
         entry.totalInPool += 1;
-        if (guest.wonPrizeAt) entry.winners += 1;
+        if (hasWonInPool(guest, grp)) entry.winners += 1;
         else entry.eligible += 1;
         map.set(key, entry);
       }
@@ -388,20 +405,26 @@ export function SettingsPage() {
     const count = resetWinners(groupFilterName);
     setConfirmResetTarget(null);
     if (count > 0) {
+      const poolLabel =
+        groupFilterName === ALL_POOL_KEY
+          ? 'All Guests'
+          : groupFilterName;
       setStatusMessage({
         type: 'success',
-        text: groupFilterName
-          ? `Reset ${count} drawn winner${count === 1 ? '' : 's'} in "${groupFilterName}".`
-          : `Reset ${count} drawn winner${count === 1 ? '' : 's'}. All guests are back in the Prize Spinner pool.`,
+        text: poolLabel
+          ? `Reset ${count} drawn winner${count === 1 ? '' : 's'} in "${poolLabel}".`
+          : `Reset ${count} drawn winner${count === 1 ? '' : 's'} across all spinner pools.`,
       });
     }
   };
 
-  const handleRestoreSingleWinner = (guest: Guest) => {
-    restoreSingleWinner(guest.id);
+  const handleRestoreSingleWinner = (guest: Guest, poolKey?: string, poolLabel?: string) => {
+    restoreSingleWinner(guest.id, poolKey);
     setStatusMessage({
       type: 'info',
-      text: `Restored ${guest.fullName} to the eligible Prize Spinner pool.`,
+      text: poolLabel
+        ? `Restored ${guest.fullName} to the eligible "${poolLabel}" spinner pool.`
+        : `Restored ${guest.fullName} to all eligible spinner pools.`,
     });
   };
 
@@ -564,22 +587,23 @@ export function SettingsPage() {
     setStatusMessage({ type: 'success', text: 'Spinner settings saved locally.' });
   };
 
-  const eligibleAllCount = sortedGuests.filter((g) => !g.wonPrizeAt).length;
+  const eligibleAllCount = sortedGuests.filter((g) => !hasWonInPool(g)).length;
+  const allWinnersCount = sortedGuests.length - eligibleAllCount;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-8 py-8 space-y-8">
       {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-800 pb-6">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-6">
         <div>
-          <div className="text-xs font-semibold tracking-wider text-amber-300 uppercase mb-1">
+          <div className="text-xs font-semibold tracking-wider text-[#004881] uppercase mb-1">
             JMEG Events · Local Browser Storage
           </div>
-          <h1 className="font-display text-4xl font-bold text-white">Spinner Settings</h1>
+          <h1 className="font-display text-4xl font-bold text-slate-900">Spinner Settings</h1>
         </div>
 
         <Link
           to="/"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-amber-400 text-[#070B19] text-xs font-bold hover:bg-amber-300 transition-colors cursor-pointer whitespace-nowrap"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#004881] text-white text-xs font-bold hover:bg-[#003764] transition-colors cursor-pointer whitespace-nowrap shadow-sm"
         >
           <Dices className="w-4 h-4" />
           <span>Open Prize Spinner ({eligibleAllCount} Eligible)</span>
@@ -587,7 +611,7 @@ export function SettingsPage() {
       </div>
 
       {/* Section Tabs */}
-      <div className="flex flex-wrap items-center gap-1 p-1 bg-[#111833] border border-slate-800 rounded-xl w-fit">
+      <div className="flex flex-wrap items-center gap-1 p-1 bg-white border border-slate-200 shadow-sm rounded-xl w-fit">
         {[
           { id: 'timing', label: 'Timing & Display', icon: SettingsIcon },
           { id: 'guests', label: `Guests & Groups (${sortedGuests.length})`, icon: Users },
@@ -600,7 +624,7 @@ export function SettingsPage() {
               type="button"
               onClick={() => setActiveTab(tab.id as typeof activeTab)}
               className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                active ? 'bg-amber-400 text-[#070B19]' : 'text-slate-300 hover:text-white'
+                active ? 'bg-[#004881] text-white shadow-sm' : 'text-slate-600 hover:text-[#004881]'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -612,12 +636,12 @@ export function SettingsPage() {
 
       {statusMessage && (
         <div
-          className={`p-4 rounded-xl border text-sm ${
+          className={`p-4 rounded-xl border text-sm font-medium ${
             statusMessage.type === 'success'
-              ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-300'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
               : statusMessage.type === 'error'
-              ? 'bg-red-500/10 border-red-500/35 text-red-300'
-              : 'bg-amber-500/10 border-amber-400/35 text-amber-200'
+              ? 'bg-red-50 border-red-200 text-red-700'
+              : 'bg-[#E8F1FA] border-[#004881]/25 text-[#004881]'
           }`}
         >
           {statusMessage.text}
@@ -656,12 +680,14 @@ export function SettingsPage() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               <form
                 onSubmit={handleSaveConfig}
-                className="lg:col-span-7 bg-[#111833] border border-slate-800 rounded-2xl p-6 space-y-6"
+                className="lg:col-span-7 bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-6"
               >
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-lg font-bold text-white">Prize Spinner Timing &amp; Title</h2>
-                    <p className="text-xs text-slate-400 mt-1">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      Prize Spinner Timing &amp; Title
+                    </h2>
+                    <p className="text-xs text-slate-600 mt-1">
                       Customize the header label shown above the wheel, spin length, and slow-down
                       tail curve.
                     </p>
@@ -673,7 +699,7 @@ export function SettingsPage() {
                         setConfigDraft(config);
                         setConfigDirty(false);
                       }}
-                      className="text-xs text-slate-400 hover:text-white underline cursor-pointer shrink-0"
+                      className="text-xs font-semibold text-slate-500 hover:text-[#004881] underline cursor-pointer shrink-0"
                     >
                       Discard Changes
                     </button>
@@ -683,7 +709,7 @@ export function SettingsPage() {
                 <div>
                   <label
                     htmlFor="spinner-header-title"
-                    className="block text-xs font-semibold text-slate-300 mb-1.5"
+                    className="block text-xs font-semibold text-slate-700 mb-1.5"
                   >
                     Spinner Header Label
                   </label>
@@ -695,12 +721,12 @@ export function SettingsPage() {
                     value={configDraft.title}
                     onChange={(e) => updateDraftField('title', e.target.value)}
                     placeholder="JMEG Events"
-                    className="w-full rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                    className="w-full rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                 </div>
 
-                <div className="space-y-2 pt-2 border-t border-slate-800">
-                  <div className="text-xs font-semibold text-slate-300">Quick Curve Presets</div>
+                <div className="space-y-2 pt-2 border-t border-slate-200">
+                  <div className="text-xs font-semibold text-slate-700">Quick Curve Presets</div>
                   <div className="flex flex-wrap gap-2">
                     {SPINNER_PRESETS.map((preset) => {
                       const isSelected =
@@ -722,8 +748,8 @@ export function SettingsPage() {
                           }}
                           className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors whitespace-nowrap ${
                             isSelected
-                              ? 'bg-[#00477f] border-sky-300/60 text-sky-50 font-semibold'
-                              : 'bg-[#070B19] border-slate-700 text-slate-300 hover:border-amber-400/50'
+                              ? 'bg-[#004881] border-[#004881] text-white font-semibold'
+                              : 'bg-[#F8FAFC] border-slate-300 text-slate-700 hover:border-[#004881]/50 hover:text-[#004881]'
                           }`}
                         >
                           {preset.label}
@@ -733,12 +759,15 @@ export function SettingsPage() {
                   </div>
                 </div>
 
-                <div className="space-y-2 pt-2 border-t border-slate-800">
+                <div className="space-y-2 pt-2 border-t border-slate-200">
                   <div className="flex items-center justify-between gap-4">
-                    <label htmlFor="spinner-duration-range" className="text-sm font-semibold text-white">
+                    <label
+                      htmlFor="spinner-duration-range"
+                      className="text-sm font-semibold text-slate-900"
+                    >
                       Total Spin Duration
                     </label>
-                    <span className="font-mono text-sm font-bold text-amber-300 tabular-nums">
+                    <span className="font-mono text-sm font-bold text-[#004881] tabular-nums">
                       {draftDurationSec.toFixed(1)}s
                     </span>
                   </div>
@@ -750,21 +779,24 @@ export function SettingsPage() {
                     step={0.5}
                     value={draftDurationSec}
                     onChange={(e) => updateDraftField('spinnerDurationSec', Number(e.target.value))}
-                    className="w-full accent-amber-400 cursor-pointer"
+                    className="w-full accent-[#004881] cursor-pointer"
                   />
-                  <div className="flex justify-between text-[11px] text-slate-400 font-mono tabular-nums">
+                  <div className="flex justify-between text-[11px] text-slate-500 font-mono tabular-nums">
                     <span>2.0s (Fast Draw)</span>
                     <span>11.0s</span>
                     <span>20.0s (Suspense Draw)</span>
                   </div>
                 </div>
 
-                <div className="space-y-2 pt-3 border-t border-slate-800">
+                <div className="space-y-2 pt-3 border-t border-slate-200">
                   <div className="flex items-center justify-between gap-4">
-                    <label htmlFor="spinner-cruise-range" className="text-sm font-semibold text-white">
+                    <label
+                      htmlFor="spinner-cruise-range"
+                      className="text-sm font-semibold text-slate-900"
+                    >
                       Full-Speed Hold Before Braking
                     </label>
-                    <span className="font-mono text-sm font-bold text-sky-300 tabular-nums">
+                    <span className="font-mono text-sm font-bold text-[#004881] tabular-nums">
                       {draftCruisePct}% ({cruiseSeconds.toFixed(1)}s)
                     </span>
                   </div>
@@ -776,21 +808,24 @@ export function SettingsPage() {
                     step={5}
                     value={draftCruisePct}
                     onChange={(e) => updateDraftField('spinnerCruisePct', Number(e.target.value))}
-                    className="w-full accent-sky-400 cursor-pointer"
+                    className="w-full accent-[#004881] cursor-pointer"
                   />
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Controls how soon deceleration begins. At <strong className="text-slate-200">0%</strong>{' '}
-                    the wheel begins slowing immediately; higher values hold top speed longer before
-                    braking kicks in.
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Controls how soon deceleration begins. At{' '}
+                    <strong className="text-slate-900">0%</strong> the wheel begins slowing
+                    immediately; higher values hold top speed longer before braking kicks in.
                   </p>
                 </div>
 
-                <div className="space-y-2 pt-3 border-t border-slate-800">
+                <div className="space-y-2 pt-3 border-t border-slate-200">
                   <div className="flex items-center justify-between gap-4">
-                    <label htmlFor="spinner-slowdown-range" className="text-sm font-semibold text-white">
+                    <label
+                      htmlFor="spinner-slowdown-range"
+                      className="text-sm font-semibold text-slate-900"
+                    >
                       End Slow-Down Tail Strength
                     </label>
-                    <span className="font-mono text-sm font-bold text-amber-300 tabular-nums">
+                    <span className="font-mono text-sm font-bold text-[#004881] tabular-nums">
                       {draftSlowDown.toFixed(1)} / 10
                     </span>
                   </div>
@@ -802,18 +837,20 @@ export function SettingsPage() {
                     step={0.5}
                     value={draftSlowDown}
                     onChange={(e) => updateDraftField('spinnerSlowDown', Number(e.target.value))}
-                    className="w-full accent-amber-400 cursor-pointer"
+                    className="w-full accent-[#004881] cursor-pointer"
                   />
-                  <p className="text-xs text-slate-400 leading-relaxed">
+                  <p className="text-xs text-slate-600 leading-relaxed">
                     Higher values stretch the deceleration tail near the end so the wheel creeps
                     slowly to a stop.
                   </p>
                 </div>
 
-                <div className="space-y-3 pt-3 border-t border-slate-800">
+                <div className="space-y-3 pt-3 border-t border-slate-200">
                   <div>
-                    <div className="text-sm font-semibold text-white">Sound &amp; Celebration Effects</div>
-                    <p className="text-xs text-slate-400 mt-0.5">
+                    <div className="text-sm font-semibold text-slate-900">
+                      Sound &amp; Celebration Effects
+                    </div>
+                    <p className="text-xs text-slate-600 mt-0.5">
                       Choose which audio and visual effects run during spins and winner reveals.
                     </p>
                   </div>
@@ -853,23 +890,23 @@ export function SettingsPage() {
                           onClick={() => updateDraftField(item.key, !enabled)}
                           className={`flex items-center justify-between gap-3 p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
                             enabled
-                              ? 'bg-[#00477f]/45 border-sky-300/45 text-white'
-                              : 'bg-[#070B19] border-slate-800 text-slate-300 hover:border-slate-700'
+                              ? 'bg-[#E8F1FA] border-[#004881]/35 text-slate-900'
+                              : 'bg-[#F8FAFC] border-slate-200 text-slate-700 hover:border-slate-300'
                           }`}
                         >
                           <div className="min-w-0">
-                            <div className="text-xs font-bold text-white">{item.label}</div>
-                            <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                            <div className="text-xs font-bold text-slate-900">{item.label}</div>
+                            <div className="text-[11px] text-slate-600 mt-0.5 leading-snug">
                               {item.desc}
                             </div>
                           </div>
                           <span
                             className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                              enabled ? 'bg-amber-400' : 'bg-slate-700'
+                              enabled ? 'bg-[#004881]' : 'bg-slate-300'
                             }`}
                           >
                             <span
-                              className={`inline-block h-4 w-4 transform rounded-full bg-[#070B19] transition-transform ${
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
                                 enabled ? 'translate-x-6' : 'translate-x-1'
                               }`}
                             />
@@ -883,7 +920,7 @@ export function SettingsPage() {
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                   <button
                     type="submit"
-                    className="px-6 py-3 rounded-lg bg-amber-400 text-[#070B19] text-sm font-bold hover:bg-amber-300 cursor-pointer"
+                    className="px-6 py-3 rounded-lg bg-[#004881] text-white text-sm font-bold hover:bg-[#003764] cursor-pointer shadow-sm"
                   >
                     Save Spinner Settings
                   </button>
@@ -902,7 +939,7 @@ export function SettingsPage() {
                         rotationEnabled: DEFAULT_CONFIG.rotationEnabled,
                       }));
                     }}
-                    className="px-4 py-3 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white cursor-pointer"
+                    className="px-4 py-3 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:border-[#004881]/50 hover:text-[#004881] cursor-pointer"
                   >
                     Reset Defaults
                   </button>
@@ -910,20 +947,20 @@ export function SettingsPage() {
               </form>
 
               {/* Live Speed Curve & Test Wheel Preview */}
-              <div className="lg:col-span-5 bg-[#111833] border border-amber-400/25 rounded-2xl p-6 space-y-5">
+              <div className="lg:col-span-5 bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
+                  <div className="text-xs font-semibold text-[#004881] uppercase tracking-wider">
                     Live Speed Profile &amp; Test Spin
                   </div>
-                  <span className="text-xs font-mono text-slate-400 tabular-nums">
+                  <span className="text-xs font-mono text-slate-500 tabular-nums">
                     {draftDurationSec.toFixed(1)}s total
                   </span>
                 </div>
 
-                <div className="bg-[#070B19] border border-slate-800 rounded-xl p-3 space-y-2">
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <div className="bg-[#F4F7FB] border border-slate-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-600">
                     <span>Wheel Speed (%)</span>
-                    <span className="font-mono text-sky-300">
+                    <span className="font-mono font-semibold text-[#004881]">
                       {draftCruisePct > 0
                         ? `Braking starts @ ${cruiseSeconds.toFixed(1)}s`
                         : 'Immediate braking'}
@@ -937,8 +974,8 @@ export function SettingsPage() {
                   >
                     <defs>
                       <linearGradient id="spinnerSpeedFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#00477f" stopOpacity="0.65" />
-                        <stop offset="100%" stopColor="#00477f" stopOpacity="0.05" />
+                        <stop offset="0%" stopColor="#004881" stopOpacity="0.28" />
+                        <stop offset="100%" stopColor="#004881" stopOpacity="0.02" />
                       </linearGradient>
                     </defs>
                     <line
@@ -946,7 +983,7 @@ export function SettingsPage() {
                       y1={padY + innerH}
                       x2={padX + innerW}
                       y2={padY + innerH}
-                      stroke="#1E293B"
+                      stroke="#CBD5E1"
                       strokeWidth="1"
                     />
                     <line
@@ -954,7 +991,7 @@ export function SettingsPage() {
                       y1={padY + innerH * 0.5}
                       x2={padX + innerW}
                       y2={padY + innerH * 0.5}
-                      stroke="#1E293B"
+                      stroke="#CBD5E1"
                       strokeDasharray="3 3"
                       strokeWidth="1"
                     />
@@ -965,7 +1002,7 @@ export function SettingsPage() {
                         y1={padY}
                         x2={cruiseEndX}
                         y2={padY + innerH}
-                        stroke="#38BDF8"
+                        stroke="#0284C7"
                         strokeDasharray="4 3"
                         strokeWidth="1.25"
                       />
@@ -973,7 +1010,7 @@ export function SettingsPage() {
                     <path
                       d={linePath}
                       fill="none"
-                      stroke="#FACC15"
+                      stroke="#004881"
                       strokeWidth="2.5"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -987,26 +1024,26 @@ export function SettingsPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="bg-[#070B19] border border-slate-800 rounded-xl p-3">
-                    <div className="text-slate-400">Peak-Speed Hold</div>
-                    <div className="font-mono text-base font-bold text-sky-300 mt-0.5 tabular-nums">
+                  <div className="bg-[#F4F7FB] border border-slate-200 rounded-xl p-3">
+                    <div className="text-slate-600">Peak-Speed Hold</div>
+                    <div className="font-mono text-base font-bold text-[#004881] mt-0.5 tabular-nums">
                       {cruiseSeconds.toFixed(1)}s
                     </div>
                   </div>
-                  <div className="bg-[#070B19] border border-slate-800 rounded-xl p-3">
-                    <div className="text-slate-400">Slow-Down Window</div>
-                    <div className="font-mono text-base font-bold text-amber-300 mt-0.5 tabular-nums">
+                  <div className="bg-[#F4F7FB] border border-slate-200 rounded-xl p-3">
+                    <div className="text-slate-600">Slow-Down Window</div>
+                    <div className="font-mono text-base font-bold text-[#004881] mt-0.5 tabular-nums">
                       {slowSeconds.toFixed(1)}s
                     </div>
                   </div>
                 </div>
 
-                <div className="flex flex-col items-center pt-2 space-y-4 border-t border-slate-800">
+                <div className="flex flex-col items-center pt-2 space-y-4 border-t border-slate-200">
                   <div className="relative">
                     <svg
                       ref={previewWheelRef}
                       viewBox="0 0 160 160"
-                      className="w-40 h-40 rounded-full border-4 border-amber-400/70 shadow-lg"
+                      className="w-40 h-40 rounded-full border-4 border-[#004881] shadow-md"
                       style={{
                         willChange: 'transform',
                         backfaceVisibility: 'hidden',
@@ -1026,22 +1063,31 @@ export function SettingsPage() {
                             key={idx}
                             d={`M 80 80 L ${x1} ${y1} A 80 80 0 0 1 ${x2} ${y2} Z`}
                             fill={color}
-                            stroke="rgba(255, 255, 255, 0.32)"
+                            stroke="rgba(255, 255, 255, 0.45)"
                             strokeWidth="1"
                           />
                         );
                       })}
                     </svg>
-                    <div
+                    <svg
+                      viewBox="0 0 20 22"
                       aria-hidden="true"
-                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[8px] border-r-[8px] border-t-[16px] border-l-transparent border-r-transparent border-t-amber-300"
-                    />
+                      className="w-5 h-5 absolute -top-2.5 left-1/2 -translate-x-1/2 drop-shadow-sm"
+                    >
+                      <polygon
+                        points="10,20 2,2 18,2"
+                        fill="#FACC15"
+                        stroke="#004881"
+                        strokeWidth="2"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </div>
 
                   <button
                     type="button"
                     onClick={runPreviewSpin}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#00477f] border border-sky-300/45 text-xs font-bold text-sky-50 hover:bg-[#00599e] cursor-pointer whitespace-nowrap"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#004881] text-xs font-bold text-white hover:bg-[#003764] cursor-pointer whitespace-nowrap shadow-sm"
                   >
                     <Play className="w-3.5 h-3.5 text-amber-300" />
                     <span>{isPreviewSpinning ? 'Restart Test Spin' : 'Test Spin Curve'}</span>
@@ -1063,11 +1109,14 @@ export function SettingsPage() {
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             {/* Left Column: Add Single + Bulk Add Guests */}
-            <div className="lg:col-span-6 bg-[#111833] border border-slate-800 rounded-2xl p-6 space-y-6">
-              <form onSubmit={handleAddSingleGuest} className="space-y-3 border-b border-slate-800 pb-6">
+            <div className="lg:col-span-6 bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-6">
+              <form
+                onSubmit={handleAddSingleGuest}
+                className="space-y-3 border-b border-slate-200 pb-6"
+              >
                 <div>
-                  <h2 className="text-lg font-bold text-white">Add Guest to Spinner</h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
+                  <h2 className="text-lg font-bold text-slate-900">Add Guest to Spinner</h2>
+                  <p className="text-xs text-slate-600 mt-0.5">
                     Add an individual participant with optional division and grouping labels.
                   </p>
                 </div>
@@ -1079,7 +1128,7 @@ export function SettingsPage() {
                     value={singleId}
                     onChange={(e) => setSingleId(e.target.value)}
                     placeholder="Employee #"
-                    className="rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-sm font-mono text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                   <input
                     type="text"
@@ -1088,7 +1137,7 @@ export function SettingsPage() {
                     value={singleName}
                     onChange={(e) => setSingleName(e.target.value)}
                     placeholder="Employee Name"
-                    className="rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                   <input
                     type="text"
@@ -1096,7 +1145,7 @@ export function SettingsPage() {
                     value={singleDivision}
                     onChange={(e) => setSingleDivision(e.target.value)}
                     placeholder="Division (optional)"
-                    className="rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                 </div>
                 <div className="flex gap-2">
@@ -1106,13 +1155,13 @@ export function SettingsPage() {
                     value={singleGroupsText}
                     onChange={(e) => setSingleGroupsText(e.target.value)}
                     placeholder="Groupings (optional, comma-separated)"
-                    className="flex-1 rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="flex-1 rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                   <button
                     type="submit"
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#00477f] border border-sky-300/40 text-xs font-bold text-sky-50 hover:bg-[#00599e] cursor-pointer whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#004881] text-xs font-bold text-white hover:bg-[#003764] cursor-pointer whitespace-nowrap shadow-sm"
                   >
-                    <UserPlus className="w-3.5 h-3.5 text-amber-300" />
+                    <UserPlus className="w-3.5 h-3.5" />
                     <span>Add Guest</span>
                   </button>
                 </div>
@@ -1122,23 +1171,28 @@ export function SettingsPage() {
               <div className="space-y-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-base font-bold text-white">CSV Import (Comma-Delimited)</h3>
-                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                      Upload a <code className="font-mono text-slate-200">.csv</code> file or paste
-                      comma-separated rows:{' '}
-                      <code className="font-mono text-slate-200">
+                    <h3 className="text-base font-bold text-slate-900">
+                      CSV Import (Comma-Delimited)
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                      Upload a{' '}
+                      <code className="font-mono text-[#004881] bg-[#E8F1FA] px-1 py-0.5 rounded">
+                        .csv
+                      </code>{' '}
+                      file or paste comma-separated rows:{' '}
+                      <code className="font-mono text-[#004881] bg-[#E8F1FA] px-1 py-0.5 rounded">
                         Emp #,Name,Division,Group
                       </code>{' '}
                       (or 5-column{' '}
-                      <code className="font-mono text-slate-200">
+                      <code className="font-mono text-[#004881] bg-[#E8F1FA] px-1 py-0.5 rounded">
                         Emp #,Name,Ignored,Division,Group
                       </code>
                       ).
                     </p>
                   </div>
 
-                  <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#00477f] border border-sky-300/45 text-xs font-bold text-sky-50 hover:bg-[#00599e] cursor-pointer whitespace-nowrap shrink-0">
-                    <Upload className="w-3.5 h-3.5 text-amber-300" />
+                  <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#004881] text-xs font-bold text-white hover:bg-[#003764] cursor-pointer whitespace-nowrap shrink-0 shadow-sm">
+                    <Upload className="w-3.5 h-3.5" />
                     <span>Upload .csv</span>
                     <input
                       type="file"
@@ -1152,7 +1206,7 @@ export function SettingsPage() {
                 <div>
                   <label
                     htmlFor="bulk-default-groups"
-                    className="block text-xs font-semibold text-slate-300 mb-1.5"
+                    className="block text-xs font-semibold text-slate-700 mb-1.5"
                   >
                     Assign Extra Grouping(s) to All Imported Guests{' '}
                     <span className="text-slate-500 font-normal">(optional, comma-separated)</span>
@@ -1163,11 +1217,11 @@ export function SettingsPage() {
                     value={bulkDefaultGroupsText}
                     onChange={(e) => setBulkDefaultGroupsText(e.target.value)}
                     placeholder="e.g. 5yr, Office Staff"
-                    className="w-full rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="w-full rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                   {allExistingGroupNames.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                      <span className="text-[11px] text-slate-400">Quick add existing:</span>
+                      <span className="text-[11px] text-slate-500">Quick add existing:</span>
                       {allExistingGroupNames.map((grp) => (
                         <button
                           key={grp}
@@ -1178,7 +1232,7 @@ export function SettingsPage() {
                               normalizeGroupList([...current, grp]).join(', ')
                             );
                           }}
-                          className="px-2 py-0.5 rounded bg-[#070B19] border border-slate-700 text-[11px] text-sky-300 hover:border-sky-300 cursor-pointer"
+                          className="px-2 py-0.5 rounded bg-[#F4F7FB] border border-slate-300 text-[11px] font-medium text-[#004881] hover:border-[#004881] cursor-pointer"
                         >
                           + {grp}
                         </button>
@@ -1188,15 +1242,15 @@ export function SettingsPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-slate-300">CSV Column Format</div>
+                  <div className="text-xs font-semibold text-slate-700">CSV Column Format</div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => setBulkColumnMode('4col')}
                       className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                         bulkColumnMode === '4col'
-                          ? 'bg-[#00477f] border-sky-300/60 text-sky-50 font-semibold'
-                          : 'bg-[#070B19] border-slate-700 text-slate-300 hover:border-amber-400/50'
+                          ? 'bg-[#004881] border-[#004881] text-white font-semibold'
+                          : 'bg-[#F8FAFC] border-slate-300 text-slate-700 hover:border-[#004881]/50 hover:text-[#004881]'
                       }`}
                     >
                       4 Columns: Emp #, Name, Division, Group
@@ -1206,8 +1260,8 @@ export function SettingsPage() {
                       onClick={() => setBulkColumnMode('5col')}
                       className={`px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                         bulkColumnMode === '5col'
-                          ? 'bg-[#00477f] border-sky-300/60 text-sky-50 font-semibold'
-                          : 'bg-[#070B19] border-slate-700 text-slate-300 hover:border-amber-400/50'
+                          ? 'bg-[#004881] border-[#004881] text-white font-semibold'
+                          : 'bg-[#F8FAFC] border-slate-300 text-slate-700 hover:border-[#004881]/50 hover:text-[#004881]'
                       }`}
                     >
                       5 Columns: Emp #, Name, [Ignore Col 3], Division, Group
@@ -1218,7 +1272,7 @@ export function SettingsPage() {
                 <div>
                   <label
                     htmlFor="bulk-guests-textarea"
-                    className="block text-xs font-semibold text-slate-300 mb-1.5"
+                    className="block text-xs font-semibold text-slate-700 mb-1.5"
                   >
                     Paste CSV Rows
                   </label>
@@ -1230,18 +1284,18 @@ export function SettingsPage() {
                     placeholder={
                       'J01818,Ignacio Ramirez,Division 3,20yr\nj04475,Tamela Edwards,Office Staff,'
                     }
-                    className="w-full rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    className="w-full rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2.5 text-xs font-mono text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-300">
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-700">
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={bulkSkipHeader}
                         onChange={(e) => setBulkSkipHeader(e.target.checked)}
-                        className="w-4 h-4 accent-amber-400 rounded cursor-pointer"
+                        className="w-4 h-4 accent-[#004881] rounded cursor-pointer"
                       />
                       <span>Skip header row</span>
                     </label>
@@ -1251,7 +1305,7 @@ export function SettingsPage() {
                         type="checkbox"
                         checked={bulkMergeExisting}
                         onChange={(e) => setBulkMergeExisting(e.target.checked)}
-                        className="w-4 h-4 accent-amber-400 rounded cursor-pointer"
+                        className="w-4 h-4 accent-[#004881] rounded cursor-pointer"
                       />
                       <span>If Employee # exists, update division &amp; merge groupings</span>
                     </label>
@@ -1259,24 +1313,24 @@ export function SettingsPage() {
                 </div>
 
                 {parsedBulkGuestRows.length > 0 && (
-                  <div className="bg-[#070B19] border border-slate-800 rounded-xl p-3 space-y-2">
+                  <div className="bg-[#F4F7FB] border border-slate-200 rounded-xl p-3 space-y-2">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="font-semibold text-amber-300 tabular-nums">
+                      <span className="font-semibold text-[#004881] tabular-nums">
                         Ready to import: {parsedBulkGuestRows.length} unique guest
                         {parsedBulkGuestRows.length === 1 ? '' : 's'}
                         {bulkHeaderSkipped ? ' · header skipped' : ''}
                       </span>
                       {bulkDuplicateList.length > 0 && (
-                        <span className="text-[11px] text-sky-300 tabular-nums">
+                        <span className="text-[11px] font-medium text-slate-600 tabular-nums">
                           {bulkDuplicateList.length} duplicate ID
                           {bulkDuplicateList.length === 1 ? '' : 's'} merged
                         </span>
                       )}
                     </div>
                     {bulkDuplicateList.length > 0 && (
-                      <div className="text-[11px] text-slate-400 leading-relaxed">
+                      <div className="text-[11px] text-slate-600 leading-relaxed">
                         Duplicate Employee #s in CSV (kept once with merged groups):{' '}
-                        <span className="font-mono text-slate-300">
+                        <span className="font-mono text-slate-800">
                           {bulkDuplicateList.join(', ')}
                         </span>
                       </div>
@@ -1284,26 +1338,26 @@ export function SettingsPage() {
                     <div className="max-h-44 overflow-y-auto text-xs">
                       <table className="w-full text-left border-collapse">
                         <thead>
-                          <tr className="text-[11px] text-slate-500 border-b border-slate-800">
+                          <tr className="text-[11px] text-slate-500 border-b border-slate-200">
                             <th className="py-1 pr-2 font-medium">Emp #</th>
                             <th className="py-1 pr-2 font-medium">Name</th>
                             <th className="py-1 pr-2 font-medium">Division</th>
                             <th className="py-1 font-medium">Group</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-800/60">
+                        <tbody className="divide-y divide-slate-200">
                           {parsedBulkGuestRows.slice(0, 50).map((row) => (
-                            <tr key={row.employeeId} className="text-slate-300">
-                              <td className="py-1 pr-2 font-mono text-amber-300 whitespace-nowrap">
+                            <tr key={row.employeeId} className="text-slate-700">
+                              <td className="py-1 pr-2 font-mono font-semibold text-[#004881] whitespace-nowrap">
                                 {row.employeeId}
                               </td>
-                              <td className="py-1 pr-2 font-semibold text-white truncate max-w-[140px]">
+                              <td className="py-1 pr-2 font-semibold text-slate-900 truncate max-w-[140px]">
                                 {row.fullName}
                               </td>
-                              <td className="py-1 pr-2 text-slate-300 truncate max-w-[130px]">
+                              <td className="py-1 pr-2 text-slate-600 truncate max-w-[130px]">
                                 {row.division || '—'}
                               </td>
-                              <td className="py-1 font-mono text-[11px] text-sky-300 truncate max-w-[110px]">
+                              <td className="py-1 font-mono text-[11px] text-slate-700 truncate max-w-[110px]">
                                 {row.groups.length > 0 ? row.groups.join(', ') : '—'}
                               </td>
                             </tr>
@@ -1323,7 +1377,7 @@ export function SettingsPage() {
                   type="button"
                   disabled={parsedBulkGuestRows.length === 0}
                   onClick={handleBulkAddGuests}
-                  className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-amber-400 text-[#070B19] text-sm font-bold hover:bg-amber-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-[#004881] text-white text-sm font-bold hover:bg-[#003764] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
                 >
                   <Users className="w-4 h-4" />
                   <span>Import CSV to Spinner ({parsedBulkGuestRows.length})</span>
@@ -1332,33 +1386,33 @@ export function SettingsPage() {
             </div>
 
             {/* Right Column: Group Spinners & Winner Reset */}
-            <div className="lg:col-span-6 bg-[#111833] border border-amber-400/25 rounded-2xl p-6 space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="lg:col-span-6 bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
-                  <div className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
+                  <div className="text-xs font-semibold text-[#004881] uppercase tracking-wider">
                     Spinner Pools &amp; Reset
                   </div>
-                  <h2 className="text-lg font-bold text-white mt-0.5">
+                  <h2 className="text-lg font-bold text-slate-900 mt-0.5">
                     Group Spinners &amp; Winner Reset
                   </h2>
                 </div>
 
                 {confirmResetTarget === '__guests_all__' ? (
-                  <div className="flex items-center gap-2 bg-red-500/10 border border-red-400/40 rounded-lg px-3 py-1.5">
-                    <span className="text-xs text-red-200 font-semibold">
-                      Reset {drawnWinners.length}?
+                  <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5">
+                    <span className="text-xs text-red-700 font-semibold">
+                      Reset {drawnPoolEntries.length}?
                     </span>
                     <button
                       type="button"
                       onClick={() => handleResetSpinnerWinners()}
-                      className="px-2.5 py-1 rounded bg-red-500 text-white text-xs font-bold hover:bg-red-400 cursor-pointer"
+                      className="px-2.5 py-1 rounded bg-red-600 text-white text-xs font-bold hover:bg-red-700 cursor-pointer"
                     >
                       Confirm
                     </button>
                     <button
                       type="button"
                       onClick={() => setConfirmResetTarget(null)}
-                      className="text-xs text-slate-300 hover:text-white cursor-pointer"
+                      className="text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -1366,36 +1420,49 @@ export function SettingsPage() {
                 ) : (
                   <button
                     type="button"
-                    disabled={drawnWinners.length === 0}
+                    disabled={drawnPoolEntries.length === 0}
                     onClick={() => setConfirmResetTarget('__guests_all__')}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#070B19] border border-amber-400/45 text-xs font-bold text-amber-300 hover:bg-amber-400 hover:text-[#070B19] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-[#004881]/35 text-xs font-bold text-[#004881] hover:bg-[#004881] hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reset All Drawn ({drawnWinners.length})</span>
+                    <span>Reset All Pools ({drawnPoolEntries.length})</span>
                   </button>
                 )}
               </div>
 
               <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
-                <div className="flex items-center justify-between gap-3 bg-[#070B19] border border-amber-400/35 rounded-xl px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#E8F1FA]/70 border border-[#004881]/25 rounded-xl px-4 py-3">
                   <div>
-                    <div className="text-sm font-bold text-white">All Guests</div>
-                    <div className="text-xs font-mono text-slate-400 tabular-nums">
-                      {eligibleAllCount} eligible of {sortedGuests.length} total
+                    <div className="text-sm font-bold text-slate-900">All Guests</div>
+                    <div className="text-xs font-mono text-slate-600 tabular-nums">
+                      {eligibleAllCount} eligible · {sortedGuests.length} total
+                      {allWinnersCount > 0 ? ` · ${allWinnersCount} won` : ''}
                     </div>
                   </div>
-                  <Link
-                    to="/"
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-400 text-[#070B19] text-xs font-bold hover:bg-amber-300 whitespace-nowrap"
-                  >
-                    <Dices className="w-3.5 h-3.5" />
-                    <span>Open Spinner</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    {allWinnersCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleResetSpinnerWinners(ALL_POOL_KEY)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-medium text-[#004881] hover:border-[#004881] cursor-pointer whitespace-nowrap"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reset ({allWinnersCount})</span>
+                      </button>
+                    )}
+                    <Link
+                      to="/"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#004881] text-white text-xs font-bold hover:bg-[#003764] whitespace-nowrap shadow-sm"
+                    >
+                      <Dices className="w-3.5 h-3.5" />
+                      <span>Open Spinner</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </Link>
+                  </div>
                 </div>
 
                 {groupSummaries.length === 0 ? (
-                  <div className="text-xs text-slate-400 py-5 text-center border border-dashed border-slate-800 rounded-xl">
+                  <div className="text-xs text-slate-500 py-5 text-center border border-dashed border-slate-300 rounded-xl">
                     No groupings created yet. Add any custom grouping attribute (department, table,
                     tier, etc.) to guests below to launch group-filtered spinners.
                   </div>
@@ -1403,14 +1470,14 @@ export function SettingsPage() {
                   groupSummaries.map((grp) => (
                     <div
                       key={grp.name}
-                      className="flex flex-wrap items-center justify-between gap-3 bg-[#070B19] border border-slate-800 rounded-xl px-4 py-3"
+                      className="flex flex-wrap items-center justify-between gap-3 bg-[#F4F7FB] border border-slate-200 rounded-xl px-4 py-3"
                     >
                       <div className="min-w-0">
-                        <div className="text-sm font-bold text-sky-200 truncate flex items-center gap-1.5">
-                          <Layers className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                        <div className="text-sm font-bold text-slate-900 truncate flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-[#004881] shrink-0" />
                           <span>{grp.name}</span>
                         </div>
-                        <div className="text-xs font-mono text-slate-400 tabular-nums">
+                        <div className="text-xs font-mono text-slate-600 tabular-nums">
                           {grp.eligible} eligible · {grp.totalInPool} total
                           {grp.winners > 0 ? ` · ${grp.winners} won` : ''}
                         </div>
@@ -1420,7 +1487,7 @@ export function SettingsPage() {
                           <button
                             type="button"
                             onClick={() => handleResetSpinnerWinners(grp.name)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-700 text-xs text-amber-300 hover:border-amber-400 cursor-pointer whitespace-nowrap"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-medium text-[#004881] hover:border-[#004881] cursor-pointer whitespace-nowrap"
                           >
                             <RotateCcw className="w-3 h-3" />
                             <span>Reset ({grp.winners})</span>
@@ -1428,9 +1495,9 @@ export function SettingsPage() {
                         )}
                         <Link
                           to={`/?group=${encodeURIComponent(grp.name)}`}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#00477f] border border-sky-300/45 text-xs font-bold text-sky-50 hover:bg-[#00599e] whitespace-nowrap"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#004881] text-xs font-bold text-white hover:bg-[#003764] whitespace-nowrap shadow-sm"
                         >
-                          <Dices className="w-3.5 h-3.5 text-amber-300" />
+                          <Dices className="w-3.5 h-3.5" />
                           <span>Pull Up Spinner</span>
                         </Link>
                       </div>
@@ -1439,23 +1506,30 @@ export function SettingsPage() {
                 )}
               </div>
 
-              {drawnWinners.length > 0 && (
-                <div className="border-t border-slate-800 pt-4 space-y-2.5">
-                  <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Recently Drawn Winners ({drawnWinners.length})
+              {drawnPoolEntries.length > 0 && (
+                <div className="border-t border-slate-200 pt-4 space-y-2.5">
+                  <div className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                    Recently Drawn Winners ({drawnPoolEntries.length})
                   </div>
                   <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                    {drawnWinners.map((w) => (
+                    {drawnPoolEntries.map((entry) => (
                       <div
-                        key={w.id}
-                        className="inline-flex items-center gap-2 bg-[#070B19] border border-slate-800 rounded-lg px-3 py-1.5 text-xs"
+                        key={`${entry.guest.id}-${entry.poolKey}`}
+                        className="inline-flex items-center gap-2 bg-[#F4F7FB] border border-slate-200 rounded-lg px-3 py-1.5 text-xs"
                       >
-                        <span className="font-semibold text-white">{w.fullName}</span>
-                        <span className="font-mono text-slate-400">{w.employeeId}</span>
+                        <span className="font-semibold text-slate-900">
+                          {entry.guest.fullName}
+                        </span>
+                        <span className="font-mono text-slate-500">{entry.guest.employeeId}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-[#E8F1FA] text-[#004881] text-[10px] font-semibold">
+                          {entry.poolLabel}
+                        </span>
                         <button
                           type="button"
-                          onClick={() => handleRestoreSingleWinner(w)}
-                          className="text-amber-300 hover:text-amber-200 underline cursor-pointer ml-1"
+                          onClick={() =>
+                            handleRestoreSingleWinner(entry.guest, entry.poolKey, entry.poolLabel)
+                          }
+                          className="font-semibold text-[#004881] hover:underline cursor-pointer ml-1"
                         >
                           Restore
                         </button>
@@ -1468,13 +1542,13 @@ export function SettingsPage() {
           </div>
 
           {/* Guest Roster, Custom Groupings & Deletion */}
-          <div className="bg-[#111833] border border-slate-800 rounded-2xl p-6 space-y-5">
+          <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h2 className="text-lg font-bold text-white">
+                <h2 className="text-lg font-bold text-slate-900">
                   Spinner Guest Roster &amp; Groupings ({filteredGuests.length})
                 </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className="text-xs text-slate-600 mt-0.5">
                   Search participants, assign custom grouping labels, or delete guests from the
                   spinner.
                 </p>
@@ -1483,9 +1557,9 @@ export function SettingsPage() {
               {guestGroupFilter !== '__all__' && guestGroupFilter !== '__ungrouped__' && (
                 <Link
                   to={`/?group=${encodeURIComponent(guestGroupFilter)}`}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00477f] border border-sky-300/45 text-xs font-bold text-sky-50 hover:bg-[#00599e] whitespace-nowrap"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#004881] text-xs font-bold text-white hover:bg-[#003764] whitespace-nowrap shadow-sm"
                 >
-                  <Dices className="w-3.5 h-3.5 text-amber-300" />
+                  <Dices className="w-3.5 h-3.5" />
                   <span>Open &ldquo;{guestGroupFilter}&rdquo; Spinner</span>
                 </Link>
               )}
@@ -1493,13 +1567,13 @@ export function SettingsPage() {
 
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative flex-1 min-w-[220px]">
-                <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   value={guestSearch}
                   onChange={(e) => setGuestSearch(e.target.value)}
                   placeholder="Search guests by name, ID, or grouping..."
-                  className="w-full rounded-lg bg-[#070B19] border border-slate-700 pl-10 pr-4 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                  className="w-full rounded-lg bg-[#F8FAFC] border border-slate-300 pl-10 pr-4 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881]"
                 />
               </div>
 
@@ -1507,7 +1581,7 @@ export function SettingsPage() {
                 aria-label="Filter guests by grouping"
                 value={guestGroupFilter}
                 onChange={(e) => setGuestGroupFilter(e.target.value)}
-                className="rounded-lg bg-[#070B19] border border-slate-700 px-3.5 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+                className="rounded-lg bg-[#F8FAFC] border border-slate-300 px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#004881]"
               >
                 <option value="__all__">All Groups ({sortedGuests.length})</option>
                 {groupSummaries.map((grp) => (
@@ -1520,7 +1594,7 @@ export function SettingsPage() {
             </div>
 
             {filteredGuests.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 bg-[#070B19] border border-slate-800 rounded-xl px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-[#F4F7FB] border border-slate-200 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-3 text-xs">
                   <button
                     type="button"
@@ -1533,7 +1607,7 @@ export function SettingsPage() {
                         setSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
                       }
                     }}
-                    className="text-amber-300 hover:text-amber-200 font-semibold cursor-pointer"
+                    className="text-[#004881] hover:underline font-semibold cursor-pointer"
                   >
                     {filteredGuests.every((g) => selectedIds.includes(g.id))
                       ? 'Deselect Visible'
@@ -1549,7 +1623,7 @@ export function SettingsPage() {
                         setSelectedIds([]);
                         setConfirmBulkDelete(false);
                       }}
-                      className="text-slate-400 hover:text-white underline cursor-pointer"
+                      className="text-slate-600 hover:text-slate-900 underline cursor-pointer"
                     >
                       Clear
                     </button>
@@ -1563,13 +1637,13 @@ export function SettingsPage() {
                     value={bulkAssignGroupInput}
                     onChange={(e) => setBulkAssignGroupInput(e.target.value)}
                     placeholder="Grouping name(s), comma-separated..."
-                    className="rounded-lg bg-[#111833] border border-slate-700 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 w-52"
+                    className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881] w-52"
                   />
                   <button
                     type="button"
                     disabled={selectedIds.length === 0 || !bulkAssignGroupInput.trim()}
                     onClick={() => handleBulkGroupAction('add')}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#00477f] border border-sky-300/45 text-xs font-semibold text-sky-50 hover:bg-[#00599e] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#004881] text-xs font-semibold text-white hover:bg-[#003764] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Add Group</span>
@@ -1578,27 +1652,27 @@ export function SettingsPage() {
                     type="button"
                     disabled={selectedIds.length === 0 || !bulkAssignGroupInput.trim()}
                     onClick={() => handleBulkGroupAction('remove')}
-                    className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs font-semibold text-slate-300 hover:text-red-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:text-red-600 hover:border-red-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     Remove Group
                   </button>
 
                   {confirmBulkDelete && selectedIds.length > 0 ? (
-                    <div className="inline-flex items-center gap-2 bg-red-500/15 border border-red-400/50 rounded-lg px-2.5 py-1">
-                      <span className="text-xs font-semibold text-red-200 whitespace-nowrap">
+                    <div className="inline-flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-2.5 py-1">
+                      <span className="text-xs font-semibold text-red-700 whitespace-nowrap">
                         Delete {selectedIds.length}?
                       </span>
                       <button
                         type="button"
                         onClick={handleDeleteSelectedGuests}
-                        className="px-2.5 py-0.5 rounded bg-red-500 text-white text-xs font-bold hover:bg-red-400 cursor-pointer"
+                        className="px-2.5 py-0.5 rounded bg-red-600 text-white text-xs font-bold hover:bg-red-700 cursor-pointer"
                       >
                         Confirm
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmBulkDelete(false)}
-                        className="text-xs text-slate-300 hover:text-white cursor-pointer"
+                        className="text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -1608,7 +1682,7 @@ export function SettingsPage() {
                       type="button"
                       disabled={selectedIds.length === 0}
                       onClick={() => setConfirmBulkDelete(true)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/40 bg-red-500/10 text-xs font-semibold text-red-300 hover:bg-red-500/20 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-700 hover:bg-red-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       <span>Delete Selected</span>
@@ -1619,13 +1693,13 @@ export function SettingsPage() {
             )}
 
             {filteredGuests.length === 0 ? (
-              <p className="text-sm text-slate-400 py-8 text-center">
+              <p className="text-sm text-slate-500 py-8 text-center">
                 {sortedGuests.length === 0
                   ? 'No guests in the spinner pool yet. Use Add Guest or Bulk Add above.'
                   : 'No guests match this search or grouping filter.'}
               </p>
             ) : (
-              <div className="divide-y divide-slate-800 max-h-[560px] overflow-y-auto pr-1">
+              <div className="divide-y divide-slate-200 max-h-[560px] overflow-y-auto pr-1">
                 {filteredGuests.map((guest) => {
                   const isSelected = selectedIds.includes(guest.id);
                   const draftValue = rowGroupDrafts[guest.id] ?? '';
@@ -1648,46 +1722,52 @@ export function SettingsPage() {
                             }
                           }}
                           aria-label={`Select ${guest.fullName}`}
-                          className="mt-1 w-4 h-4 accent-amber-400 rounded cursor-pointer shrink-0"
+                          className="mt-1 w-4 h-4 accent-[#004881] rounded cursor-pointer shrink-0"
                         />
                         <div className="min-w-0 space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-white">{guest.fullName}</span>
-                            <span className="text-xs font-mono text-amber-300 tabular-nums">
+                            <span className="font-semibold text-slate-900">{guest.fullName}</span>
+                            <span className="text-xs font-mono font-semibold text-[#004881] tabular-nums">
                               {guest.employeeId}
                             </span>
                             {guest.division && (
-                              <span className="text-xs text-slate-300">· {guest.division}</span>
+                              <span className="text-xs text-slate-600">· {guest.division}</span>
                             )}
-                            {guest.wonPrizeAt && (
-                              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
-                                · Won Prize
-                                <button
-                                  type="button"
-                                  onClick={() => handleRestoreSingleWinner(guest)}
-                                  className="text-amber-300 hover:text-amber-200 underline cursor-pointer"
+                            {Object.keys(guest.wonByPool).map((poolKey) => {
+                              const label = getPoolDisplayLabel(guest, poolKey);
+                              return (
+                                <span
+                                  key={poolKey}
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700"
                                 >
-                                  Reset
-                                </button>
-                              </span>
-                            )}
+                                  · Won ({label})
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRestoreSingleWinner(guest, poolKey, label)}
+                                    className="text-[#004881] hover:underline cursor-pointer"
+                                  >
+                                    Reset
+                                  </button>
+                                </span>
+                              );
+                            })}
                           </div>
 
                           <div className="flex flex-wrap items-center gap-1.5">
                             {guest.groups.length === 0 ? (
-                              <span className="text-[11px] text-slate-500">No groupings</span>
+                              <span className="text-[11px] text-slate-400">No groupings</span>
                             ) : (
                               guest.groups.map((grp) => (
                                 <span
                                   key={grp}
-                                  className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-[#00477f]/65 border border-sky-300/35 text-sky-100"
+                                  className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-[#E8F1FA] border border-[#004881]/20 text-[#004881]"
                                 >
                                   <span>{grp}</span>
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveGroupFromGuest(guest, grp)}
                                     aria-label={`Remove ${grp} from ${guest.fullName}`}
-                                    className="text-sky-200 hover:text-red-300 cursor-pointer"
+                                    className="text-[#004881]/70 hover:text-red-600 cursor-pointer"
                                   >
                                     <X className="w-3 h-3" />
                                   </button>
@@ -1718,12 +1798,12 @@ export function SettingsPage() {
                             }
                             placeholder="Add grouping..."
                             maxLength={LIMITS.MAX_GROUP_NAME}
-                            className="rounded-lg bg-[#070B19] border border-slate-700 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 w-40"
+                            className="rounded-lg bg-[#F8FAFC] border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#004881] w-40"
                           />
                           <button
                             type="submit"
                             disabled={!draftValue.trim()}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#00477f] border border-sky-300/40 text-xs font-semibold text-sky-50 hover:bg-[#00599e] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#004881] text-xs font-semibold text-white hover:bg-[#003764] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             <span>Add</span>
@@ -1731,18 +1811,18 @@ export function SettingsPage() {
                         </form>
 
                         {isConfirmingDelete ? (
-                          <div className="inline-flex items-center gap-1.5 bg-red-500/15 border border-red-400/50 rounded-lg px-2.5 py-1">
+                          <div className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 rounded-lg px-2.5 py-1">
                             <button
                               type="button"
                               onClick={() => handleDeleteSingleGuest(guest)}
-                              className="px-2 py-0.5 rounded bg-red-500 text-white text-xs font-bold hover:bg-red-400 cursor-pointer whitespace-nowrap"
+                              className="px-2 py-0.5 rounded bg-red-600 text-white text-xs font-bold hover:bg-red-700 cursor-pointer whitespace-nowrap"
                             >
                               Confirm Delete
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteId(null)}
-                              className="text-xs text-slate-300 hover:text-white cursor-pointer"
+                              className="text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
                             >
                               Cancel
                             </button>
@@ -1752,7 +1832,7 @@ export function SettingsPage() {
                             type="button"
                             onClick={() => setConfirmDeleteId(guest.id)}
                             aria-label={`Delete ${guest.fullName}`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-700 text-xs font-semibold text-red-300 hover:border-red-400/60 hover:bg-red-500/10 cursor-pointer whitespace-nowrap"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-red-600 hover:border-red-300 hover:bg-red-50 cursor-pointer whitespace-nowrap"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Delete</span>
